@@ -124,6 +124,7 @@ export default function MainLayout({
 
       const nextChapterId = detail.chapterId;
       const cause = detail.cause ?? "user";
+      const previousChapterId = currentChapterId;
 
       void (async () => {
         if (!nextChapterId) {
@@ -136,6 +137,11 @@ export default function MainLayout({
             const ok = await editorRef.current?.saveNow();
             if (ok === false) {
               message.error("切换章节前自动保存失败，请稍后重试。");
+              window.dispatchEvent(
+                new CustomEvent("creatorai:forceChapterSelection", {
+                  detail: { projectPath, chapterId: previousChapterId ?? null },
+                }),
+              );
               return;
             }
           }

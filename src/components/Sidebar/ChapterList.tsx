@@ -66,6 +66,18 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
   }, [projectPath, load]);
 
   useEffect(() => {
+    const onForceSelection = (event: Event) => {
+      const { detail } = event as CustomEvent<{ projectPath: string; chapterId: string | null }>;
+      if (!detail || detail.projectPath !== projectPath) return;
+      selectionCauseRef.current = "load";
+      setCurrentChapterId(detail.chapterId);
+    };
+
+    window.addEventListener("creatorai:forceChapterSelection", onForceSelection);
+    return () => window.removeEventListener("creatorai:forceChapterSelection", onForceSelection);
+  }, [projectPath]);
+
+  useEffect(() => {
     const key = currentChapterStorageKey(projectPath);
     const cause = selectionCauseRef.current;
     selectionCauseRef.current = "user";
