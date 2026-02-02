@@ -1,7 +1,67 @@
-# Tauri + React + Typescript
+# Creator Studio
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+AI 驱动的小说写作助手。
 
-## Recommended IDE Setup
+## 项目简介
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Creator Studio 面向长篇小说/系列创作场景，提供“项目-章节”结构化管理、编辑器能力，以及围绕写作流程设计的 AI 讨论与 AI 续写能力，帮助你更稳定地推进写作。
+
+## 功能特性
+
+- **章节管理**：项目创建/打开、章节增删改查、章节列表与排序、导入 txt 拆章
+- **写作编辑**：Undo/Redo、字数统计、自动保存
+- **AI 讨论**：围绕剧情、人物、世界观进行多轮讨论与方案推演
+- **AI 续写**：基于当前章节与上下文续写，可选择插入到正文
+- **写作预设**：风格/口吻/视角、角色设定、禁用词等写作约束与偏好
+
+## 安装说明
+
+### macOS（使用 .dmg）
+
+1. 下载并打开 `.dmg` 安装包
+2. 将应用拖拽到“Applications/应用程序”
+3. 首次运行如遇到系统拦截，可在“系统设置 → 隐私与安全性”中允许打开
+
+> 说明：当前打包产物的应用/安装包名称可能显示为 `CreatorAI`（由 `src-tauri/tauri.conf.json` 的 `productName` 决定）。
+
+### 从源码运行（开发者）
+
+前置依赖：
+- Node.js（建议 18+）
+- Rust（stable）
+- macOS 需要 Xcode Command Line Tools：`xcode-select --install`
+
+安装依赖：
+
+```bash
+npm install
+```
+
+启动开发模式（Tauri）：
+
+```bash
+npm run tauri dev
+```
+
+构建安装包（macOS .dmg）：
+
+```bash
+npm run tauri build
+```
+
+## 使用说明
+
+1. **创建/打开项目**：选择一个工作目录作为项目根目录
+2. **导入或新建章节**：可导入 txt 自动拆章，或手动新建章节
+3. **编辑写作**：在编辑器中完成正文创作，应用自动保存/撤销重做等能力
+4. **AI 面板**：
+   - 选择“讨论”模式：梳理情节、推演冲突、完善设定
+   - 选择“续写”模式：基于上下文生成续写内容并插入到正文
+5. **写作预设**：为不同作品配置风格、角色设定与写作约束，提升一致性
+
+## 技术栈
+
+- Tauri
+- React
+- TypeScript
+- Rust
