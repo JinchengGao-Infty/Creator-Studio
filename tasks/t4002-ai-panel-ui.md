@@ -1,163 +1,313 @@
-# T4.2 AI 面板 UI 框架
+# T4.2 AI 面板 UI 框架（支持 Tool 调用展示）
 
 ## 目标
-实现 AI 助手面板的基础 UI 框架，包括消息列表、输入框、模式切换等。
+实现 AI 助手面板的基础 UI 框架，**重点支持 Tool 调用过程的可视化展示**。
+
+## 核心理念
+
+这不是普通的聊天界面，而是 **AI Agent 的工作台**：
+- 用户能看到 AI 正在调用哪些 Tools
+- 用户能看到 Tool 的执行结果
+- 用户能理解 AI 的"思考过程"
 
 ## 输入
 - T4.1 完成的会话后端
 - T3.10 完成的 MainLayout（已有 AIPanel 占位）
+- T1.5 完成的 Tool 调用能力
 
 ## 输出
 - `src/components/AIPanel/` 完善的组件
-- 与后端会话 API 的集成
+- Tool 调用可视化组件
 
 ## UI 结构
 
 ```
 ┌─────────────────────────────────┐
-│  AI 助手           [+] [设置]   │  ← 标题栏 + 新建会话 + 设置按钮
+│  AI 助手           [+] [设置]   │  ← 标题栏
 ├─────────────────────────────────┤
-│  [讨论] [续写]                  │  ← 模式切换 Tab
+│  [讨论] [续写]                  │  ← 模式切换
+├─────────────────────────────────┤
+│  会话: 讨论角色设定  ▼          │  ← 会话选择
+├─────────────────────────────────┤
+│                                 │
+│  👤 帮我看看第三章写得怎么样    │
+│                                 │
+│  🤖 ┌─────────────────────┐    │
+│     │ 🔧 read              │    │  ← Tool 调用展示
+│     │   path: chapters/... │    │
+│     │   ✓ 读取了 2,341 字  │    │
+│     └─────────────────────┘    │
+│                                 │
+│     第三章的开头氛围营造不错... │  ← AI 回复
+│                                 │
 ├─────────────────────────────────┤
 │  ┌─────────────────────────┐   │
-│  │ 会话: 讨论角色设定  ▼   │   │  ← 会话选择下拉
+│  │ 输入消息...              │   │
 │  └─────────────────────────┘   │
-├─────────────────────────────────┤
-│                                 │
-│  👤 帮我设计一个反派角色        │  ← 消息列表
-│                                 │
-│  🤖 好的，我来帮你设计...       │
-│     [正在输入...]               │  ← 流式输出状态
-│                                 │
-├─────────────────────────────────┤
-│  ┌─────────────────────────┐   │
-│  │ 输入消息...              │   │  ← 输入框
-│  └─────────────────────────┘   │
-│  [发送]                         │  ← 发送按钮
+│  [发送]                         │
 └─────────────────────────────────┘
 ```
 
 ## 组件结构
 
-### AIPanel.tsx（主容器）
+### ToolCallDisplay.tsx（Tool 调用展示）
 ```tsx
-interface AIPanelProps {
-  projectPath: string;
-  currentChapterId: string | null;
-  currentChapterContent: string;
+interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, any>;
+  status: 'calling' | 'success' | 'error';
+  result?: string;
+  error?: string;
+  duration?: number;  // 执行耗时 ms
 }
 
-// 状态
-- currentMode: 'discussion' | 'continue'
-- currentSessionId: string | null
-- sessions: Session[]
-- messages: Message[]
-- isLoading: boolean
-- streamingContent: string
+function ToolCallDisplay({ toolCall }: { toolCall: ToolCall }) {
+  const [expanded, setExpanded] = useState(false);
+  
+  const iconMap = {
+    read: '📖',
+    write: '✏️',
+    append: '➕',
+    list: '📁',
+    search: '🔍',
+    save_summary: '💾',
+  };
+  
+  return (
+    <div className={`tool-call tool-call-${toolCall.status}`}>
+      <div className="tool-call-header" onClick={() => setExpanded(!expanded)}>
+        <span className="tool-icon">{iconMap[toolCall.name] || '🔧'}</span>
+        <span className="tool-name">{toolCall.name}</span>
+        
+        {toolCall.status === 'calling' && <Spin size="small" />}
+        {toolCall.status === 'success' && <CheckOutlined style={{ color: 'green' }} />}
+        {toolCall.status === 'error' && <CloseOutlined style={{ color: 'red' }} />}
+        
+        <span className="tool-summary">
+          {summarizeToolCall(toolCall)}
+        </span>
+        
+        <ExpandIcon expanded={expanded} />
+      </div>
+      
+      {expanded && (
+        <div className="tool-call-details">
+          <div className="tool-args">
+            <strong>参数：</strong>
+            <pre>{JSON.stringify(toolCall.args, null, 2)}</pre>
+          </div>
+          {toolCall.result && (
+            <div className="tool-result">
+              <strong>结果：</strong>
+              <pre>{truncate(toolCall.result, 500)}</pre>
+            </div>
+          )}
+          {toolCall.error && (
+            <div className="tool-error">
+              <strong>错误：</strong>
+              <span>{toolCall.error}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 生成简短摘要
+function summarizeToolCall(call: ToolCall): string {
+  switch (call.name) {
+    case 'read':
+      return call.result ? `读取了 ${call.result.length} 字` : '读取中...';
+    case 'search':
+      return call.result ? `找到 ${JSON.parse(call.result).length} 条结果` : '搜索中...';
+    case 'append':
+      return call.status === 'success' ? '已追加' : '追加中...';
+    case 'save_summary':
+      return call.status === 'success' ? '已保存' : '保存中...';
+    default:
+      return '';
+  }
+}
 ```
 
-### AIPanelHeader.tsx
-- 标题
-- 新建会话按钮
-- 设置按钮（打开写作预设）
+### ChatMessage.tsx（消息组件，支持 Tool 调用）
+```tsx
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  toolCalls?: ToolCall[];
+  timestamp: number;
+}
 
-### ModeTab.tsx
-- 讨论/续写模式切换
-- 切换时可能需要切换会话
+function ChatMessage({ message }: { message: Message }) {
+  const isUser = message.role === 'user';
+  
+  return (
+    <div className={`chat-message ${message.role}`}>
+      <div className="message-avatar">
+        {isUser ? '👤' : '🤖'}
+      </div>
+      
+      <div className="message-body">
+        {/* Tool 调用展示（AI 消息才有） */}
+        {message.toolCalls && message.toolCalls.length > 0 && (
+          <div className="tool-calls-container">
+            {message.toolCalls.map(call => (
+              <ToolCallDisplay key={call.id} toolCall={call} />
+            ))}
+          </div>
+        )}
+        
+        {/* 消息内容 */}
+        <div className="message-content">
+          <Markdown>{message.content}</Markdown>
+        </div>
+        
+        {/* 时间戳 */}
+        <div className="message-time">
+          {formatTime(message.timestamp)}
+        </div>
+      </div>
+    </div>
+  );
+}
+```
 
-### SessionSelector.tsx
-- 当前会话下拉选择
-- 显示会话名称
-- 点击展开会话列表
-- 支持搜索（可选）
+### 流式输出 + Tool 调用状态
+```tsx
+function useAIChat(projectPath: string, sessionId: string) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [pendingToolCalls, setPendingToolCalls] = useState<ToolCall[]>([]);
+  const [streamingContent, setStreamingContent] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
-### ChatMessages.tsx
-- 消息列表渲染
-- 用户消息样式（右侧，主题色背景）
-- AI 消息样式（左侧，浅色背景）
-- 流式输出时显示打字效果
-- 续写模式显示"应用到章节"按钮
+  useEffect(() => {
+    // 监听 Tool 调用开始
+    const unlistenToolStart = listen('ai:tool_call_start', (event) => {
+      const call = event.payload as ToolCall;
+      setPendingToolCalls(prev => [...prev, { ...call, status: 'calling' }]);
+    });
 
-### ChatInput.tsx
-- 多行输入框（Ant Design Input.TextArea）
-- 发送按钮
-- Ctrl+Enter 发送快捷键
-- 发送中禁用输入
+    // 监听 Tool 调用完成
+    const unlistenToolEnd = listen('ai:tool_call_end', (event) => {
+      const { id, result, error } = event.payload;
+      setPendingToolCalls(prev => prev.map(call => 
+        call.id === id 
+          ? { ...call, status: error ? 'error' : 'success', result, error }
+          : call
+      ));
+    });
 
-## 样式要点
+    // 监听流式内容
+    const unlistenChunk = listen('ai:chunk', (event) => {
+      setStreamingContent(prev => prev + event.payload);
+    });
+
+    // 监听完成
+    const unlistenDone = listen('ai:done', (event) => {
+      // 将 pending 状态转为完整消息
+      const newMessage: Message = {
+        id: generateId(),
+        role: 'assistant',
+        content: event.payload.content,
+        toolCalls: pendingToolCalls,
+        timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev, newMessage]);
+      setPendingToolCalls([]);
+      setStreamingContent('');
+      setIsProcessing(false);
+    });
+
+    return () => {
+      unlistenToolStart.then(fn => fn());
+      unlistenToolEnd.then(fn => fn());
+      unlistenChunk.then(fn => fn());
+      unlistenDone.then(fn => fn());
+    };
+  }, []);
+
+  return { messages, pendingToolCalls, streamingContent, isProcessing, ... };
+}
+```
+
+## 样式
 
 ```css
-/* 适配双主题 */
-.ai-panel {
-  background: var(--bg-secondary);
-  border-left: 1px solid var(--border);
-}
-
-.chat-message.user .bubble {
-  background: var(--user-bubble);
-  color: var(--user-text);
-  border-radius: 12px 12px 4px 12px;
-}
-
-.chat-message.assistant .bubble {
+/* Tool 调用样式 */
+.tool-call {
   background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border-radius: 12px 12px 12px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 8px 0;
+  font-size: 13px;
 }
 
-.mode-tab {
-  border-bottom: 1px solid var(--border);
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  gap: 8px;
 }
 
-.mode-tab-item.active {
-  color: var(--accent);
-  border-bottom: 2px solid var(--accent);
+.tool-call-calling {
+  border-color: var(--accent);
 }
-```
 
-## 状态管理
+.tool-call-success .tool-call-header {
+  color: var(--text-secondary);
+}
 
-```tsx
-// hooks/useAIPanel.ts
-export function useAIPanel(projectPath: string) {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+.tool-call-error {
+  border-color: #ff4d4f;
+}
 
-  // 加载会话列表
-  useEffect(() => {
-    invoke('list_sessions', { projectPath }).then(setSessions);
-  }, [projectPath]);
+.tool-icon {
+  font-size: 16px;
+}
 
-  // 切换会话时加载消息
-  useEffect(() => {
-    if (currentSessionId) {
-      invoke('get_session_messages', { projectPath, sessionId: currentSessionId })
-        .then(setMessages);
-    }
-  }, [currentSessionId]);
+.tool-name {
+  font-family: monospace;
+  font-weight: 500;
+}
 
-  // 创建会话
-  const createSession = async (name: string, mode: SessionMode) => { ... };
+.tool-summary {
+  color: var(--text-muted);
+  flex: 1;
+}
 
-  // 发送消息（暂时只保存，不调用 AI）
-  const sendMessage = async (content: string) => { ... };
+.tool-call-details {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-primary);
+}
 
-  return { sessions, currentSessionId, messages, isLoading, createSession, sendMessage, ... };
+.tool-call-details pre {
+  margin: 4px 0;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 200px;
 }
 ```
 
 ## 验收标准
-1. [ ] 能显示会话列表并切换
-2. [ ] 能创建新会话
-3. [ ] 能显示消息历史
-4. [ ] 能发送消息（保存到后端）
-5. [ ] 模式切换 Tab 正常工作
-6. [ ] 样式适配双主题
-7. [ ] `npm run build` 通过
+1. [ ] 消息列表正常显示
+2. [ ] Tool 调用过程可视化（调用中/成功/失败）
+3. [ ] Tool 调用详情可展开查看
+4. [ ] 流式输出正常显示
+5. [ ] 模式切换正常
+6. [ ] 会话切换正常
+7. [ ] 样式适配双主题
+8. [ ] `npm run build` 通过
 
 ## 注意事项
-- 本任务不实现 AI 调用，只做 UI 框架
-- AI 调用在 T4.3/T4.4 实现
-- 流式输出的 UI 先做好，但不接入真实数据
+- Tool 调用展示要简洁，默认折叠详情
+- 调用中状态要有明显的 loading 指示
+- 错误状态要醒目但不刺眼

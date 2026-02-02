@@ -1,168 +1,176 @@
-# T4.3 实现讨论模式
+# T4.3 实现讨论模式（带 Tool 能力）
 
 ## 目标
-实现 AI 讨论模式，用户可以与 AI 自由对话讨论创作思路。
+实现 AI 讨论模式，AI 作为写作顾问，可以**主动调用 Tools** 来读取章节、搜索摘要、辅助创作。
+
+## 核心理念
+
+**不是普通对话，而是 AI Agent**：
+- AI 可以自主决定调用哪些 Tools
+- 用户说"帮我看看第三章的角色设定"→ AI 自己调用 read 读取章节
+- 用户说"之前写过类似的情节吗"→ AI 自己调用 search 搜索摘要
 
 ## 输入
 - T4.2 完成的 AI 面板 UI
-- 现有的 ai_bridge.rs（AI 调用能力）
+- T1.5 完成的 Tool 调用能力（ai-engine + Tauri）
 
 ## 输出
-- 讨论模式的完整功能
-- 流式输出支持
+- 讨论模式的完整 Agent 功能
+- Tool 调用的 UI 展示
 
-## 功能描述
+## 可用 Tools
 
-### 讨论模式特点
-- 自由对话，无特定格式要求
-- AI 作为写作顾问角色
-- 可以讨论：角色设定、情节走向、世界观、写作技巧等
-- 对话历史完整保留
-
-### 系统提示词
-```
-你是一位专业的小说写作顾问。你的任务是帮助作者：
-- 讨论角色设定和人物关系
-- 探讨情节发展和故事走向
-- 分析世界观和背景设定
-- 提供写作技巧和建议
-- 解答创作过程中的疑问
-
-请用专业但友好的语气回答，给出具体、有建设性的建议。
-如果作者提供了章节内容，请基于内容给出针对性的反馈。
-```
-
-## 实现要点
-
-### 1. AI 调用流程
-```
-用户输入 → 保存用户消息 → 构建 messages 数组 → 调用 AI → 流式返回 → 保存 AI 消息
-```
-
-### 2. 消息构建
 ```typescript
-function buildMessages(session: Session, messages: Message[], systemPrompt: string) {
-  return [
-    { role: 'system', content: systemPrompt },
-    ...messages.map(m => ({
-      role: m.role.toLowerCase(),
-      content: m.content
-    }))
-  ];
-}
-```
-
-### 3. 流式输出
-```rust
-// src-tauri/src/ai_bridge.rs 扩展
-
-#[tauri::command]
-pub async fn chat_stream(
-    window: tauri::Window,
-    project_path: String,
-    session_id: String,
-    messages: Vec<ChatMessage>,
-    provider_config: ProviderConfig,
-) -> Result<(), String> {
-    // 调用 AI API
-    // 每收到一个 chunk，emit 事件
-    window.emit("ai:chunk", chunk)?;
-    
-    // 完成后 emit 完成事件
-    window.emit("ai:done", full_content)?;
-    
-    Ok(())
-}
-```
-
-### 4. 前端监听流式输出
-```typescript
-// hooks/useAIChat.ts
-import { listen } from '@tauri-apps/api/event';
-
-export function useAIChat() {
-  const [streamingContent, setStreamingContent] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-
-  useEffect(() => {
-    const unlistenChunk = listen('ai:chunk', (event) => {
-      setStreamingContent(prev => prev + event.payload);
-    });
-
-    const unlistenDone = listen('ai:done', (event) => {
-      setIsStreaming(false);
-      // 保存完整消息到后端
-    });
-
-    return () => {
-      unlistenChunk.then(fn => fn());
-      unlistenDone.then(fn => fn());
-    };
-  }, []);
-
-  const sendMessage = async (content: string) => {
-    setIsStreaming(true);
-    setStreamingContent('');
-    await invoke('chat_stream', { ... });
-  };
-
-  return { streamingContent, isStreaming, sendMessage };
-}
-```
-
-### 5. 上下文窗口管理
-```typescript
-// 限制发送给 AI 的消息数量，避免超出 token 限制
-const MAX_CONTEXT_MESSAGES = 20;
-
-function getContextMessages(messages: Message[]) {
-  if (messages.length <= MAX_CONTEXT_MESSAGES) {
-    return messages;
+// 已在 ai-engine 中定义的 Tools
+const tools = {
+  read: {
+    description: "读取文件内容",
+    parameters: { path: string, offset?: number, limit?: number }
+  },
+  write: {
+    description: "写入文件（覆盖）",
+    parameters: { path: string, content: string }
+  },
+  append: {
+    description: "追加内容到文件末尾",
+    parameters: { path: string, content: string }
+  },
+  list: {
+    description: "列出目录内容",
+    parameters: { path: string }
+  },
+  search: {
+    description: "在文件中搜索关键词",
+    parameters: { path: string, query: string }
   }
-  // 保留最近的消息
-  return messages.slice(-MAX_CONTEXT_MESSAGES);
+};
+```
+
+## 系统提示词
+
+```
+你是一位专业的小说写作顾问 AI Agent。你可以使用以下工具来帮助作者：
+
+## 可用工具
+- read: 读取章节内容或配置文件
+- list: 列出章节目录
+- search: 搜索摘要或章节中的关键词
+
+## 项目结构
+当前项目目录：{projectPath}
+- chapters/ — 章节文件（chapter_001.txt, chapter_002.txt...）
+- chapters/index.json — 章节索引
+- summaries.json — 摘要记录
+- config.json — 项目配置
+
+## 工作方式
+1. 当用户询问章节内容时，主动使用 read 工具读取
+2. 当用户询问之前的情节时，使用 search 搜索摘要
+3. 当需要了解项目结构时，使用 list 列出目录
+4. 基于读取的内容给出专业、具体的建议
+
+## 注意
+- 你是顾问角色，讨论模式下不要直接修改文件
+- 给出建议时要具体，引用你读取到的内容
+- 如果用户没有指定章节，先用 list 查看有哪些章节
+```
+
+## Tool 调用流程
+
+```
+用户: "帮我看看第三章的开头写得怎么样"
+     ↓
+AI 决定调用 Tool
+     ↓
+AI → Tauri: { tool: "read", args: { path: "chapters/chapter_003.txt", limit: 50 } }
+     ↓
+Tauri 执行文件读取
+     ↓
+Tauri → AI: { result: "第三章内容..." }
+     ↓
+AI 基于内容生成回复: "第三章开头的氛围营造不错，但是..."
+```
+
+## UI 展示 Tool 调用
+
+```tsx
+// 消息中显示 Tool 调用过程
+interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, any>;
+  result?: string;
+  status: 'pending' | 'success' | 'error';
+}
+
+// ChatMessage 组件
+function ChatMessage({ message }: { message: Message }) {
+  return (
+    <div className="chat-message">
+      {/* 显示 Tool 调用 */}
+      {message.toolCalls?.map(call => (
+        <div key={call.id} className="tool-call">
+          <span className="tool-icon">🔧</span>
+          <span className="tool-name">{call.name}</span>
+          <span className="tool-args">{JSON.stringify(call.args)}</span>
+          {call.status === 'pending' && <Spin size="small" />}
+          {call.status === 'success' && <CheckOutlined />}
+        </div>
+      ))}
+      
+      {/* AI 回复内容 */}
+      <div className="message-content">{message.content}</div>
+    </div>
+  );
 }
 ```
 
-## UI 更新
+## 示例对话
 
-### ChatMessages.tsx 更新
-```tsx
-// 显示流式输出
-{isStreaming && (
-  <div className="chat-message assistant">
-    <div className="bubble">
-      {streamingContent}
-      <span className="typing-cursor">|</span>
-    </div>
-  </div>
-)}
+**用户**：帮我看看目前写了哪些章节
+
+**AI**（调用 list）：
+```
+🔧 list { path: "chapters" }
 ```
 
-### ChatInput.tsx 更新
-```tsx
-// 发送中禁用
-<Button 
-  type="primary" 
-  onClick={handleSend}
-  disabled={isStreaming || !inputValue.trim()}
-  loading={isStreaming}
->
-  发送
-</Button>
+**AI**：目前项目中有 5 个章节：
+1. 第一章：初遇（3200字）
+2. 第二章：误会（2800字）
+...
+
+---
+
+**用户**：第二章的结尾感觉有点仓促，你觉得呢？
+
+**AI**（调用 read）：
 ```
+🔧 read { path: "chapters/chapter_002.txt", offset: -100 }
+```
+
+**AI**：我看了第二章的结尾，确实有些仓促。主要问题是...建议可以...
+
+---
+
+**用户**：之前有没有写过类似的告别场景？
+
+**AI**（调用 search）：
+```
+🔧 search { path: "summaries.json", query: "告别" }
+```
+
+**AI**：在第三章的摘要中提到过一次告别场景...
 
 ## 验收标准
-1. [ ] 能发送消息并收到 AI 回复
-2. [ ] 流式输出正常显示
-3. [ ] 对话历史正确保存
-4. [ ] 切换会话后历史正确加载
-5. [ ] 上下文窗口限制生效
-6. [ ] 错误处理（网络错误、API 错误）
+1. [ ] AI 能自主决定何时调用 Tool
+2. [ ] Tool 调用正确执行并返回结果
+3. [ ] UI 显示 Tool 调用过程
+4. [ ] AI 基于 Tool 结果给出有价值的回复
+5. [ ] 对话上下文正确维护
+6. [ ] 错误处理（Tool 调用失败）
 7. [ ] `npm run build` 和 `cargo test` 通过
 
-## 测试场景
-1. 发送"帮我设计一个反派角色"
-2. 继续追问"他的动机是什么"
-3. 验证上下文连贯
-4. 切换会话再切回，验证历史保留
+## 技术要点
+- 使用 Vercel AI SDK 的 tool calling 能力
+- Tool 结果要回传给 AI 继续生成
+- 流式输出时也要显示 Tool 调用状态
