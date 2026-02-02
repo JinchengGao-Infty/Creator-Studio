@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, Radio, Space, Typography, message } from "antd";
+import { Alert, Button, Space, Typography, message } from "antd";
 import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
 import SessionList from "./SessionList";
-import { aiChat, getSystemPromptForMode, type ChatMessage } from "../../lib/ai";
+import { aiChat, type ChatMessage } from "../../lib/ai";
 import {
-  buildSystemPrompt,
   formatWritingPreset,
   getWritingPresets,
   saveWritingPresets,
@@ -40,13 +39,8 @@ function storageCurrentKey(projectPath: string) {
   return `creatorai:currentSession:${encodeURIComponent(projectPath)}`;
 }
 
-function defaultMode(): SessionMode {
-  return "Discussion";
-}
-
-function defaultSessionName(mode: SessionMode, existingCount: number): string {
-  const prefix = mode === "Discussion" ? "讨论" : "续写";
-  return `${prefix} 会话 ${existingCount + 1}`;
+function defaultSessionName(existingCount: number): string {
+  return `会话 ${existingCount + 1}`;
 }
 
 function toPanelMessage(msg: { id: string; role: string; content: string; timestamp: number; metadata?: unknown }): PanelMessage {
@@ -108,6 +102,19 @@ function chapterFilePath(chapterId: string) {
   return `chapters/${chapterId}.txt`;
 }
 
+const CONTINUE_DRAFT_MARKER = "<<<CONTINUE_DRAFT>>>";
+
+function stripContinueDraftMarker(reply: string): { isDraft: boolean; content: string } {
+  const normalized = reply.replace(/^\uFEFF/, "");
+  const escapedMarker = CONTINUE_DRAFT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(^|\\r?\\n)\\s*${escapedMarker}\\s*(\\r?\\n|$)`);
+  const match = re.exec(normalized);
+  if (!match) return { isDraft: false, content: reply };
+
+  const after = normalized.slice(match.index + match[0].length);
+  return { isDraft: true, content: after.replace(/^\s+/, "") };
+}
+
 function buildContinueSystemPrompt(params: {
   projectPath: string;
   chapterId: string;
@@ -163,10 +170,70 @@ ${params.writingPreset}
   `.trim();
 }
 
+function buildUnifiedSystemPrompt(params: {
+  projectPath: string;
+  chapterId: string | null;
+  chapterTitle: string | null;
+  writingPreset: string;
+}): string {
+  const chapterLabel = params.chapterId
+    ? params.chapterTitle
+      ? `${params.chapterTitle}（${params.chapterId}）`
+      : params.chapterId
+    : "未选择章节";
+  const chapterPath = params.chapterId ? chapterFilePath(params.chapterId) : "（未选择章节）";
+
+  return `
+你是 Creator Studio 的小说写作 AI Agent。你要在同一个对话中同时支持“讨论”和“续写”，并能自动判断用户意图。
+
+## 工具（重要）
+- 可读工具：list / read / search / get_chapter_info
+- 写入工具：append / write / save_summary
+
+写入工具只能在用户明确确认“确认追加”后使用；在未确认阶段严禁调用 append/write/save_summary。
+
+## 自动判断意图
+1) 讨论类：用户在聊剧情、人物、设定、结构、润色建议等
+   - 你可以主动调用 list/read/search/get_chapter_info 读取上下文
+   - 只给建议与方案，不要修改任何文件
+
+2) 续写类：用户要求继续写某一章正文
+   - 续写必须分为两阶段：草稿阶段 → 用户确认 → 应用阶段
+
+## 续写草稿阶段（默认）
+1. 先用 read 读取当前章节最后部分作为上下文（建议 offset: -2000）
+2. 用 search 搜索 summaries.json 相关摘要，确保前后连贯
+3. 输出 500-1000 字的“正文续写预览”
+
+输出格式必须严格遵守（为了让前端识别草稿）：
+- 第一行：${CONTINUE_DRAFT_MARKER}
+- 从第二行开始：只输出“纯正文预览”，不要标题/解释/Markdown
+
+然后询问用户是否“确认追加”。
+
+## 续写应用阶段（仅当用户明确说“确认追加”）
+1. 使用 append 将你上一条给出的“正文预览原文（不要改写）”追加到章节文件末尾
+2. 使用 save_summary 保存 50-120 字摘要（chapterId 使用当前章节）
+3. 回复用户：已追加、摘要已保存，并可提示本章当前字数
+
+## 当前项目
+- 项目路径：${params.projectPath}
+- 当前选中章节：${chapterLabel}
+- 章节文件：${chapterPath}
+- 摘要文件：summaries.json
+
+## 写作要求
+${params.writingPreset}
+
+## 注意
+- 如果用户要续写但当前没有选中章节，请先追问要续写哪一章，或提示用户在左侧选择章节。
+  `.trim();
+}
+
 export default function AIPanel({ projectPath }: AIPanelProps) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<SessionMode>(defaultMode());
+  const mode: SessionMode = "Continue";
   const [messagesInSession, setMessagesInSession] = useState<PanelMessage[]>([]);
   const [currentChapterId, setCurrentChapterId] = useState<string | null>(null);
   const [currentChapterTitle, setCurrentChapterTitle] = useState<string | null>(null);
@@ -266,8 +333,8 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         if (!next.length) {
           const created = await createSession({
             projectPath,
-            name: defaultSessionName(defaultMode(), 0),
-            mode: defaultMode(),
+            name: defaultSessionName(0),
+            mode,
           });
           next = [created];
         }
@@ -283,14 +350,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
         setCurrentSessionId(selectedId);
         if (selectedId) localStorage.setItem(currentKey, selectedId);
-
-        const selected = next.find((s) => s.id === selectedId);
-        setMode(selected?.mode ?? defaultMode());
       } catch (error) {
         message.error(`加载会话失败: ${formatError(error)}`);
         setSessions([]);
         setCurrentSessionId(null);
-        setMode(defaultMode());
       } finally {
         if (!cancelled) setLoadingSessions(false);
       }
@@ -414,7 +477,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null;
   const busy = loading || loadingSessions || loadingMessages || savingPresets;
-  const continueReady = mode !== "Continue" || !!(currentSession?.chapter_id ?? currentChapterId);
 
   const activePreset = useMemo(() => {
     if (!presets.length) return createDefaultWritingPreset();
@@ -427,7 +489,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   }, [presets, activePresetId]);
 
   const actionableDraftId = useMemo(() => {
-    if (mode !== "Continue") return null;
     for (let i = messagesInSession.length - 1; i >= 0; i -= 1) {
       const msg = messagesInSession[i];
       if (msg.role !== "assistant") continue;
@@ -436,7 +497,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       return msg.id;
     }
     return null;
-  }, [mode, messagesInSession, dismissedDraftIds]);
+  }, [messagesInSession, dismissedDraftIds]);
 
   const selectSession = (id: string | null) => {
     setCurrentSessionId(id);
@@ -445,9 +506,8 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
   const handleCreateSession = () => {
     if (loadingSessions) return;
-    const existing = sessions.filter((s) => s.mode === mode).length;
-    const name = defaultSessionName(mode, existing);
-    const chapterIdForSession = mode === "Continue" ? currentChapterId : null;
+    const name = defaultSessionName(sessions.length);
+    const chapterIdForSession = currentChapterId;
 
     setLoadingSessions(true);
     void createSession({ projectPath, name, mode, chapterId: chapterIdForSession })
@@ -465,36 +525,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
   const handleSelectSession = (id: string) => {
     if (!sessions.some((s) => s.id === id)) return;
-    const selected = sessions.find((s) => s.id === id);
-    if (selected) setMode(selected.mode);
     selectSession(id);
-  };
-
-  const handleModeChange = (nextMode: SessionMode) => {
-    if (nextMode === mode) return;
-    setMode(nextMode);
-
-    const nextSessions = sessions.filter((s) => s.mode === nextMode);
-    if (nextSessions.length) {
-      selectSession(nextSessions[0]?.id ?? null);
-      return;
-    }
-
-    selectSession(null);
-    const name = defaultSessionName(nextMode, 0);
-    const chapterIdForSession = nextMode === "Continue" ? currentChapterId : null;
-    setLoadingSessions(true);
-    void createSession({ projectPath, name, mode: nextMode, chapterId: chapterIdForSession })
-      .then((created) => {
-        setSessions((prev) => [created, ...prev]);
-        selectSession(created.id);
-      })
-      .catch((error) => {
-        message.error(`创建会话失败: ${formatError(error)}`);
-      })
-      .finally(() => {
-        setLoadingSessions(false);
-      });
   };
 
   function resolveContinueChapter(session: Session): { chapterId: string; chapterTitle: string | null } | null {
@@ -505,13 +536,31 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   }
 
   function inferContinuePhase(userText: string): ContinuePhase {
-    const hasDraft = messagesInSession.some((m) => m.role === "assistant" && m.metadata?.applied === false);
-    if (!hasDraft) return "draft";
-    const normalized = userText.trim();
+    const normalized = userText.trim().replace(/[。！？.!?]+$/g, "");
     if (!normalized) return "draft";
-    if (/(确认追加|追加吧|追加到章节|写入章节|应用到章节)/.test(normalized)) return "apply";
-    if (normalized === "确认" || normalized === "可以" || normalized === "好") return "apply";
-    if (/追加|写入|应用/.test(normalized)) return "apply";
+
+    // Only treat "确认/可以/好" as apply when the most recent assistant message is a draft preview.
+    let lastAssistantIndex = -1;
+    let lastDraftIndex = -1;
+    for (let i = messagesInSession.length - 1; i >= 0; i -= 1) {
+      const msg = messagesInSession[i];
+      if (lastAssistantIndex === -1 && msg.role === "assistant") lastAssistantIndex = i;
+      if (lastDraftIndex === -1 && msg.role === "assistant" && msg.metadata?.applied === false) {
+        lastDraftIndex = i;
+      }
+      if (lastAssistantIndex !== -1 && lastDraftIndex !== -1) break;
+    }
+
+    if (lastDraftIndex === -1) return "draft";
+
+    // Explicit confirm is always treated as apply when there is any draft.
+    if (/确认追加/.test(normalized)) return "apply";
+
+    const lastAssistantIsDraft = lastAssistantIndex === lastDraftIndex;
+    if (!lastAssistantIsDraft) return "draft";
+
+    if (/^(确认|可以|好|行|ok|OK|okay|Okay)$/.test(normalized)) return "apply";
+    if (/^(追加|追加吧|追加到章节|写入章节|应用到章节)$/.test(normalized)) return "apply";
     return "draft";
   }
 
@@ -527,14 +576,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   ) => {
     if (!currentSession || busy) return;
 
-    const continuePhase =
-      mode === "Continue" ? (options?.continuePhase ?? inferContinuePhase(content)) : "draft";
-    const allowWrite = mode === "Continue" && continuePhase === "apply";
+    const continuePhase = options?.continuePhase ?? inferContinuePhase(content);
+    const allowWrite = continuePhase === "apply";
     const sourceDraftMessageId = allowWrite ? (options?.sourceDraftMessageId ?? actionableDraftId ?? undefined) : undefined;
 
-    const resolved = mode === "Continue" ? resolveContinueChapter(currentSession) : null;
-    if (mode === "Continue" && !resolved) {
-      message.error("请先在左侧选择要续写的章节");
+    const resolved = resolveContinueChapter(currentSession);
+    if (allowWrite && !resolved) {
+      message.error("当前未选择章节，无法追加。请先在左侧选择要续写的章节。");
       return;
     }
 
@@ -594,7 +642,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       }));
 
       const systemPrompt =
-        mode === "Continue" && resolved
+        allowWrite && resolved
           ? buildContinueSystemPrompt({
               projectPath,
               chapterId: resolved.chapterId,
@@ -602,7 +650,12 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
               writingPreset: formatWritingPreset(activePreset),
               phase: continuePhase,
             })
-          : buildSystemPrompt(activePreset, getSystemPromptForMode(mode, projectPath));
+          : buildUnifiedSystemPrompt({
+              projectPath,
+              chapterId: resolved?.chapterId ?? null,
+              chapterTitle: resolved?.chapterTitle ?? null,
+              writingPreset: formatWritingPreset(activePreset),
+            });
 
       const { content: reply, toolCalls } = await aiChat({
         projectDir: projectPath,
@@ -613,14 +666,17 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         allowWrite,
       });
 
+      const parsed = stripContinueDraftMarker(reply);
+      const displayReply = parsed.content;
+
       const streamPromise = realStreamingRef.current
         ? Promise.resolve()
         : (async () => {
-            const chunkSize = reply.length > 3000 ? 80 : 40;
-            const intervalMs = reply.length > 3000 ? 10 : 16;
-            for (let i = 0; i < reply.length; i += chunkSize) {
+            const chunkSize = displayReply.length > 3000 ? 80 : 40;
+            const intervalMs = displayReply.length > 3000 ? 10 : 16;
+            for (let i = 0; i < displayReply.length; i += chunkSize) {
               if (streamTokenRef.current !== streamToken) return;
-              setStreamingContent(reply.slice(0, i + chunkSize));
+              setStreamingContent(displayReply.slice(0, i + chunkSize));
               await delay(intervalMs);
             }
           })();
@@ -628,22 +684,20 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       const assistantMeta: MessageMetadata = {};
       if (toolCalls.length) assistantMeta.tool_calls = toolCalls;
 
-      if (mode === "Continue") {
-        if (allowWrite) {
-          assistantMeta.applied = true;
-          const saved = extractSavedSummary(toolCalls);
-          if (saved) assistantMeta.summary = saved;
-        } else {
-          assistantMeta.applied = false;
-          assistantMeta.word_count = countWords(reply);
-        }
+      if (parsed.isDraft && !allowWrite) {
+        assistantMeta.applied = false;
+        assistantMeta.word_count = countWords(displayReply);
+      } else if (allowWrite) {
+        assistantMeta.applied = true;
+        const saved = extractSavedSummary(toolCalls);
+        if (saved) assistantMeta.summary = saved;
       }
 
       const createdAssistant = await addSessionMessage({
         projectPath,
         sessionId: currentSession.id,
         role: "Assistant",
-        content: reply,
+        content: displayReply,
         metadata: Object.keys(assistantMeta).length ? assistantMeta : null,
       });
 
@@ -655,7 +709,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       setPendingToolCalls([]);
 
       const appended = toolCalls.some((c) => c.name === "append" && c.status === "success");
-      if (mode === "Continue" && appended) {
+      if (appended) {
         window.dispatchEvent(
           new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "append" } }),
         );
@@ -670,7 +724,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         );
       }
 
-      if (mode === "Continue" && allowWrite && typeof sourceDraftMessageId === "string" && appended) {
+      if (allowWrite && typeof sourceDraftMessageId === "string" && appended) {
         try {
           await updateMessageMetadata({
             projectPath,
@@ -786,20 +840,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           </Space>
         </div>
 
-        <div className="ai-panel-mode">
-          <Radio.Group
-            value={mode}
-            optionType="button"
-            buttonStyle="solid"
-            onChange={(e) => handleModeChange(e.target.value as SessionMode)}
-            options={[
-              { label: "讨论", value: "Discussion" },
-              { label: "续写", value: "Continue" },
-            ]}
-            disabled={loadingSessions || loading || loadingMessages}
-          />
-        </div>
-
         <PresetSelector
           presets={presets.length ? presets : [createDefaultWritingPreset()]}
           activePresetId={activePresetId}
@@ -810,9 +850,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
         <div className="ai-panel-session">
           <SessionList
-            sessions={sessions
-              .filter((s) => s.mode === mode)
-              .map((s) => ({ id: s.id, name: s.name }))}
+            sessions={sessions.map((s) => ({ id: s.id, name: s.name }))}
             currentSessionId={currentSessionId}
             onSelect={handleSelectSession}
             disabled={busy}
@@ -839,17 +877,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         </div>
       ) : null}
 
-      {mode === "Continue" && !currentSession?.chapter_id && !currentChapterId ? (
-        <div className="ai-panel-warning">
-          <Alert
-            type="info"
-            showIcon
-            message="未选择章节"
-            description="续写模式需要绑定章节。请先在左侧章节列表选择要续写的章节，然后再发送续写指令。"
-          />
-        </div>
-      ) : null}
-
       <ChatHistory
         messages={messagesInSession}
         mode={mode}
@@ -864,7 +891,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         pendingToolCalls={pendingToolCalls}
       />
 
-      <ChatInput onSend={handleSend} disabled={busy || !currentSession || !continueReady} />
+      <ChatInput onSend={handleSend} disabled={busy || !currentSession} />
     </div>
   );
 }
