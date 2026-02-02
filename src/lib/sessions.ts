@@ -14,9 +14,10 @@ export interface Session {
 export type MessageRole = "User" | "Assistant" | "System";
 
 export interface MessageMetadata {
-  summary: string | null;
-  word_count: number | null;
-  applied: boolean | null;
+  summary?: string | null;
+  word_count?: number | null;
+  applied?: boolean | null;
+  tool_calls?: unknown;
 }
 
 export interface SessionMessage {
@@ -68,6 +69,26 @@ export async function addSessionMessage(params: {
     role: params.role,
     content: params.content,
     metadata: params.metadata ?? null,
+  })) as SessionMessage;
+}
+
+export async function updateMessageMetadata(params: {
+  projectPath: string;
+  sessionId: string;
+  messageId: string;
+  summary?: string;
+  wordCount?: number;
+  applied?: boolean;
+}): Promise<SessionMessage> {
+  return (await invoke("update_message_metadata", {
+    project_path: params.projectPath,
+    session_id: params.sessionId,
+    message_id: params.messageId,
+    metadata: {
+      summary: params.summary,
+      word_count: params.wordCount,
+      applied: params.applied,
+    },
   })) as SessionMessage;
 }
 

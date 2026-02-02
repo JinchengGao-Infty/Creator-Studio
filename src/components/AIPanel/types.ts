@@ -10,12 +10,17 @@ export interface ToolCall {
 
 export type PanelMessageRole = "user" | "assistant" | "system";
 
+export interface PanelMessageMetadata {
+  summary?: string | null;
+  word_count?: number | null;
+  applied?: boolean | null;
+}
+
 export interface PanelMessage {
   id: string;
   role: PanelMessageRole;
   content: string;
   timestamp: number;
   toolCalls?: ToolCall[];
-  metadata?: unknown;
+  metadata?: PanelMessageMetadata | null;
 }
-

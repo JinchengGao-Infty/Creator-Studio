@@ -142,6 +142,8 @@ export async function aiChat(params: {
   messages: ChatMessage[];
   mode: SessionMode;
   systemPrompt?: string;
+  chapterId?: string | null;
+  allowWrite?: boolean;
 }): Promise<{ content: string; toolCalls: AIChatToolCall[] }> {
   const active = await getActiveChatConfig();
   if (!active) {
@@ -155,6 +157,8 @@ export async function aiChat(params: {
     messages: params.messages,
     projectDir: params.projectDir,
     mode: params.mode,
+    chapterId: params.chapterId ?? null,
+    allowWrite: params.allowWrite ?? false,
   })) as AIChatResult;
 
   return {

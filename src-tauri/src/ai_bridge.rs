@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::file_ops::{append, list, read, search, write};
+use crate::project::ChapterIndex;
 use crate::session::{SessionMode, ToolCall, ToolCallStatus};
+use crate::{security::validate_path, summary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallStartEvent {
@@ -38,6 +40,8 @@ pub struct ChatRequest {
     pub messages: Vec<Value>,
     pub project_dir: String,
     pub mode: SessionMode,
+    pub chapter_id: Option<String>,
+    pub allow_write: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -244,7 +248,14 @@ pub fn run_chat_with_events(
 
                     let started = Instant::now();
                     let result =
-                        execute_tool(&request.project_dir, request.mode.clone(), &name, &args);
+                        execute_tool(
+                            &request.project_dir,
+                            request.mode.clone(),
+                            request.allow_write,
+                            request.chapter_id.as_deref(),
+                            &name,
+                            &args,
+                        );
                     let duration = started.elapsed().as_millis() as u64;
 
                     let (status, result_value, error_value) = match result {
@@ -318,9 +329,99 @@ fn as_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_f64().and_then(|v| if v.is_finite() { Some(v as i64) } else { None }))
 }
 
-fn execute_tool(project_dir: &str, mode: SessionMode, name: &str, args: &Value) -> Result<String, String> {
-    if matches!(mode, SessionMode::Discussion) && matches!(name, "write" | "append") {
+fn now_unix_seconds() -> Result<u64, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| format!("Failed to read system time: {e}"))
+}
+
+fn count_words(content: &str) -> u32 {
+    content.chars().filter(|c| !c.is_whitespace()).count() as u32
+}
+
+fn maybe_update_chapter_index(project_root: &Path, relative_path: &str) -> Result<(), String> {
+    if !relative_path.starts_with("chapters/") || !relative_path.ends_with(".txt") {
+        return Ok(());
+    }
+    let filename = relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(relative_path);
+    let Some(chapter_id) = filename.strip_suffix(".txt") else {
+        return Ok(());
+    };
+    if !chapter_id.starts_with("chapter_")
+        || !chapter_id["chapter_".len()..]
+            .chars()
+            .all(|c| c.is_ascii_digit())
+    {
+        return Ok(());
+    }
+
+    let index_path = validate_path(project_root, "chapters/index.json")?;
+    if !index_path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&index_path)
+        .map_err(|e| format!("Failed to read chapters/index.json: {e}"))?;
+    let mut index = serde_json::from_slice::<ChapterIndex>(&bytes)
+        .map_err(|e| format!("Failed to parse chapters/index.json: {e}"))?;
+
+    let Some(meta) = index.chapters.iter_mut().find(|c| c.id == chapter_id) else {
+        return Ok(());
+    };
+
+    let chapter_path = validate_path(project_root, relative_path)?;
+    let content = std::fs::read_to_string(&chapter_path)
+        .map_err(|e| format!("Failed to read chapter content: {e}"))?;
+
+    meta.updated = now_unix_seconds()?;
+    meta.word_count = count_words(&content);
+
+    let json = serde_json::to_string_pretty(&index)
+        .map_err(|e| format!("Serialize JSON failed: {e}"))?;
+    std::fs::write(&index_path, format!("{json}\n"))
+        .map_err(|e| format!("Failed to write chapters/index.json: {e}"))?;
+    Ok(())
+}
+
+fn normalize_chapter_id(value: &str) -> Result<String, String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err("chapterId is empty".to_string());
+    }
+    if v.starts_with("chapter_") {
+        let suffix = &v["chapter_".len()..];
+        if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_digit()) {
+            return Err("Invalid chapterId (expected 'chapter_XXX')".to_string());
+        }
+        return Ok(v.to_string());
+    }
+    if v.chars().all(|c| c.is_ascii_digit()) {
+        // Accept "3" / "03" / "003"
+        let n: u32 = v
+            .parse()
+            .map_err(|_| "Invalid chapterId (expected digits)".to_string())?;
+        return Ok(format!("chapter_{n:03}"));
+    }
+    Err("Invalid chapterId".to_string())
+}
+
+fn execute_tool(
+    project_dir: &str,
+    mode: SessionMode,
+    allow_write: bool,
+    chapter_id: Option<&str>,
+    name: &str,
+    args: &Value,
+) -> Result<String, String> {
+    if matches!(mode, SessionMode::Discussion) && matches!(name, "write" | "append" | "save_summary") {
         return Err("Tool not allowed in Discussion mode".to_string());
+    }
+    if matches!(mode, SessionMode::Continue) && !allow_write && matches!(name, "write" | "append" | "save_summary") {
+        return Err("Tool not allowed before user confirmation".to_string());
     }
 
     let project_root = Path::new(project_dir);
@@ -358,6 +459,8 @@ fn execute_tool(project_dir: &str, mode: SessionMode, name: &str, args: &Value) 
                 content: content.to_string(),
             };
             append::append_file(project_root, params)?;
+            // Keep chapters/index.json wordCount in sync if we're appending to a chapter file.
+            maybe_update_chapter_index(project_root, path)?;
             Ok("Content appended successfully".to_string())
         }
         "list" => {
@@ -377,6 +480,53 @@ fn execute_tool(project_dir: &str, mode: SessionMode, name: &str, args: &Value) 
             };
             let result = search::search_in_files(project_root, params)?;
             serde_json::to_string(&result).map_err(|e| e.to_string())
+        }
+        "get_chapter_info" => {
+            let Some(ch_id) = chapter_id else {
+                return Err("No chapter selected".to_string());
+            };
+            let chapter_id = normalize_chapter_id(ch_id)?;
+            let index_path = validate_path(project_root, "chapters/index.json")?;
+            let bytes = std::fs::read(&index_path)
+                .map_err(|e| format!("Failed to read chapters/index.json: {e}"))?;
+            let index = serde_json::from_slice::<ChapterIndex>(&bytes)
+                .map_err(|e| format!("Failed to parse chapters/index.json: {e}"))?;
+            let meta = index
+                .chapters
+                .iter()
+                .find(|c| c.id == chapter_id)
+                .ok_or("Chapter not found")?;
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct ChapterInfo {
+                chapter_id: String,
+                title: String,
+                path: String,
+                word_count: u32,
+                updated_at: u64,
+            }
+            let info = ChapterInfo {
+                chapter_id: meta.id.clone(),
+                title: meta.title.clone(),
+                path: format!("chapters/{}.txt", meta.id),
+                word_count: meta.word_count,
+                updated_at: meta.updated,
+            };
+            serde_json::to_string(&info).map_err(|e| e.to_string())
+        }
+        "save_summary" => {
+            let chapter_id_raw = args["chapterId"]
+                .as_str()
+                .or_else(|| args["chapter_id"].as_str())
+                .ok_or("Missing chapterId")?;
+            let chapter_id = normalize_chapter_id(chapter_id_raw)?;
+            let summary_text = args["summary"].as_str().ok_or("Missing summary")?;
+            let entry = summary::save_summary(
+                project_root,
+                chapter_id,
+                summary_text.to_string(),
+            )?;
+            serde_json::to_string(&entry).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown tool: {name}")),
     }

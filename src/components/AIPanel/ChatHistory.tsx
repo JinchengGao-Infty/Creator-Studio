@@ -2,10 +2,17 @@ import { useEffect, useRef } from "react";
 import { Spin } from "antd";
 import ChatMessage from "./ChatMessage";
 import ToolCallDisplay from "./ToolCallDisplay";
+import type { SessionMode } from "../../lib/sessions";
 import type { PanelMessage, ToolCall } from "./types";
 
 interface ChatHistoryProps {
   messages: PanelMessage[];
+  mode: SessionMode;
+  continueDraftId?: string | null;
+  onConfirmDraft?: (message: PanelMessage) => void;
+  onRegenerateDraft?: (message: PanelMessage) => void;
+  onDiscardDraft?: (message: PanelMessage) => void;
+  draftActionsDisabled?: boolean;
   loading?: boolean;
   loadingHistory?: boolean;
   pendingContent?: string;
@@ -14,6 +21,12 @@ interface ChatHistoryProps {
 
 export default function ChatHistory({
   messages,
+  mode,
+  continueDraftId,
+  onConfirmDraft,
+  onRegenerateDraft,
+  onDiscardDraft,
+  draftActionsDisabled,
   loading,
   loadingHistory,
   pendingContent,
@@ -28,7 +41,16 @@ export default function ChatHistory({
   return (
     <div className="chat-history">
       {messages.map((msg) => (
-        <ChatMessage key={msg.id} message={msg} />
+        <ChatMessage
+          key={msg.id}
+          message={msg}
+          mode={mode}
+          continueDraftId={continueDraftId ?? null}
+          onConfirmDraft={onConfirmDraft}
+          onRegenerateDraft={onRegenerateDraft}
+          onDiscardDraft={onDiscardDraft}
+          draftActionsDisabled={draftActionsDisabled}
+        />
       ))}
 
       {loadingHistory && !messages.length && !loading ? (

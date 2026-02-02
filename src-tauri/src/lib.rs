@@ -10,6 +10,7 @@ mod project;
 mod recent_projects;
 mod security;
 mod session;
+mod summary;
 
 use chapter::{
     create_chapter, delete_chapter, get_chapter_content, list_chapters, rename_chapter,
@@ -26,7 +27,7 @@ use project::{create_project, get_project_info, open_project, save_project_confi
 use recent_projects::{add_recent_project, get_recent_projects};
 use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
-    rename_session,
+    rename_session, update_message_metadata,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -228,6 +229,8 @@ async fn ai_chat(
     messages: Vec<serde_json::Value>,
     project_dir: String,
     mode: session::SessionMode,
+    chapter_id: Option<String>,
+    allow_write: Option<bool>,
 ) -> Result<ai_bridge::ChatResponse, String> {
     use std::sync::Arc;
     use tauri::Emitter;
@@ -239,6 +242,8 @@ async fn ai_chat(
         messages,
         project_dir,
         mode,
+        chapter_id,
+        allow_write: allow_write.unwrap_or(false),
     };
 
     let app_for_start = app.clone();
@@ -308,6 +313,7 @@ pub fn run() {
             delete_session,
             get_session_messages,
             add_message,
+            update_message_metadata,
             preview_import_txt,
             import_txt
         ])

@@ -43,6 +43,10 @@ export async function saveWritingPresets(params: {
 }
 
 export function buildSystemPrompt(preset: WritingPreset, basePrompt: string): string {
+  return `${basePrompt}\n${formatWritingPreset(preset)}`.trim();
+}
+
+export function formatWritingPreset(preset: WritingPreset): string {
   const styleDesc = `
 写作风格要求：
 - 文风：${preset.style.tone}
@@ -56,6 +60,5 @@ export function buildSystemPrompt(preset: WritingPreset, basePrompt: string): st
 
   const customDesc = preset.customPrompt ? `\n额外要求：\n${preset.customPrompt}` : "";
 
-  return `${basePrompt}\n${styleDesc}${rulesDesc}${customDesc}`.trim();
+  return `${styleDesc}${rulesDesc}${customDesc}`.trim();
 }
-

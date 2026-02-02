@@ -259,6 +259,52 @@
   user-select: none;
 }
 
+/* Continue mode preview */
+.continue-preview {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+
+.continue-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.continue-word-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.continue-preview-content {
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}
+
+.continue-preview-actions {
+  padding: 0 10px 10px;
+}
+
+.continue-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.continue-summary-text {
+  font-size: 12px;
+}
+
 .writing-preset-item.active {
   background: var(--bg-tertiary);
 }
