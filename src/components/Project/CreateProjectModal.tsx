@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Form, Input, Modal, message } from "antd";
+import { formatError } from "../../utils/error";
 
 interface CreateProjectModalProps {
   visible: boolean;
@@ -26,7 +27,7 @@ export default function CreateProjectModal({ visible, onCancel, onCreate }: Crea
         form.setFieldValue("path", selected);
       }
     } catch (error) {
-      message.error(`选择失败: ${String(error)}`);
+      message.error(`选择失败: ${formatError(error)}`);
     }
   };
 
@@ -68,4 +69,3 @@ export default function CreateProjectModal({ visible, onCancel, onCreate }: Crea
     </Modal>
   );
 }
-

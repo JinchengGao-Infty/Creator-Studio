@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SessionMode } from "./sessions";
 
-export type ChatRole = "user" | "assistant";
+export type ChatRole = "user" | "assistant" | "system";
 
 export interface ChatMessage {
   role: ChatRole;

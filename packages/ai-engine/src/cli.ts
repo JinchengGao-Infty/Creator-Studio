@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { createEngine } from './index'
+import { generateCompactSummary } from './compact'
 import { fetchModels } from './models'
 import type { Message, ModelParameters, ProviderConfig, ToolCallRequest, ToolCallResult } from './types'
 
@@ -18,6 +19,13 @@ type FetchModelsInput = {
   apiKey: string
 }
 
+type CompactInput = {
+  type: 'compact'
+  provider: ProviderConfig
+  parameters: ModelParameters
+  messages: Message[]
+}
+
 type ToolResultInput = {
   type: 'tool_result'
   results: ToolCallResult[]
@@ -26,6 +34,7 @@ type ToolResultInput = {
 type EngineOutput =
   | { type: 'tool_call'; calls: ToolCallRequest[] }
   | { type: 'done'; content: string }
+  | { type: 'compact_summary'; content: string }
   | { type: 'models'; models: string[] }
   | { type: 'error'; message: string }
 
@@ -58,7 +67,7 @@ function writeJson(output: EngineOutput) {
 async function main() {
   const engine = createEngine()
 
-  const input = (await readJsonFromStdin()) as ChatInput | FetchModelsInput
+  const input = (await readJsonFromStdin()) as ChatInput | FetchModelsInput | CompactInput
 
   if (input.type === 'fetch_models') {
     try {
@@ -68,6 +77,21 @@ async function main() {
       writeJson({ type: 'error', message: error instanceof Error ? error.message : String(error) })
     }
     process.exit(0)
+  }
+
+  if (input.type === 'compact') {
+    try {
+      const content = await generateCompactSummary({
+        provider: input.provider,
+        parameters: input.parameters,
+        messages: input.messages,
+      })
+      writeJson({ type: 'compact_summary', content })
+      process.exit(0)
+    } catch (error) {
+      writeJson({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      process.exit(1)
+    }
   }
 
   if (input.type !== 'chat') {

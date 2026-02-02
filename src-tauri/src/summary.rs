@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::security::validate_path;
+use crate::write_protection;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +63,9 @@ pub fn load_summaries(project_root: &Path) -> Result<Vec<SummaryEntry>, String> 
 
 pub fn save_summary(project_root: &Path, chapter_id: String, summary: String) -> Result<SummaryEntry, String> {
     ensure_project_exists(project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
     if chapter_id.trim().is_empty() {
         return Err("chapterId is empty".to_string());
     }
@@ -69,7 +73,7 @@ pub fn save_summary(project_root: &Path, chapter_id: String, summary: String) ->
         return Err("summary is empty".to_string());
     }
 
-    let mut summaries = load_summaries(project_root)?;
+    let mut summaries = load_summaries(&project_root)?;
     let entry = SummaryEntry {
         chapter_id,
         summary,
@@ -77,10 +81,10 @@ pub fn save_summary(project_root: &Path, chapter_id: String, summary: String) ->
     };
     summaries.push(entry.clone());
 
-    let path = summaries_path(project_root)?;
+    let path = summaries_path(&project_root)?;
     let json = serde_json::to_string_pretty(&summaries)
         .map_err(|e| format!("Serialize summaries.json failed: {e}"))?;
-    fs::write(path, format!("{json}\n")).map_err(|e| format!("Failed to write summaries.json: {e}"))?;
+    write_protection::write_string_with_backup(&project_root, &path, &format!("{json}\n"))?;
 
     Ok(entry)
 }
@@ -146,4 +150,3 @@ mod tests {
         assert_eq!(loaded[1].summary, "续写：主角遇到神秘老人。");
     }
 }
-

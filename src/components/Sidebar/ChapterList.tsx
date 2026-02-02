@@ -5,6 +5,7 @@ import { ImportOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons"
 import ChapterItem, { type ChapterMeta } from "./ChapterItem";
 import ImportModal from "../Project/ImportModal";
 import "../../styles/sidebar.css";
+import { formatError } from "../../utils/error";
 
 interface ChapterListProps {
   projectPath: string;
@@ -42,7 +43,7 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
         return storedValid ? stored : fallbackId;
       });
     } catch (error) {
-      message.error(`加载章节失败: ${String(error)}`);
+      message.error(`加载章节失败: ${formatError(error)}`);
       setChapters([]);
       setCurrentChapterId(null);
     } finally {
@@ -86,7 +87,7 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
         new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
       );
     } catch (error) {
-      message.error(`创建失败: ${String(error)}`);
+      message.error(`创建失败: ${formatError(error)}`);
     } finally {
       setCreating(false);
     }
@@ -105,7 +106,7 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
         new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
       );
     } catch (error) {
-      message.error(`重命名失败: ${String(error)}`);
+      message.error(`重命名失败: ${formatError(error)}`);
     }
   };
 
@@ -127,7 +128,7 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
         new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
       );
     } catch (error) {
-      message.error(`删除失败: ${String(error)}`);
+      message.error(`删除失败: ${formatError(error)}`);
     }
   };
 

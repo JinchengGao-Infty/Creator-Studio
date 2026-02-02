@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::project::{ChapterIndex, ChapterMeta};
 use crate::security::validate_path;
+use crate::write_protection;
 
 fn now_unix_seconds() -> Result<u64, String> {
     SystemTime::now()
@@ -40,8 +41,10 @@ fn write_index(project_root: &Path, index: &ChapterIndex) -> Result<(), String> 
     let index_path = validate_path(project_root, "chapters/index.json")?;
     let json =
         serde_json::to_string_pretty(index).map_err(|e| format!("Serialize JSON failed: {e}"))?;
-    fs::write(index_path, format!("{json}\n"))
-        .map_err(|e| format!("Failed to write chapters/index.json: {e}"))?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    write_protection::write_string_with_backup(&project_root, &index_path, &format!("{json}\n"))?;
     Ok(())
 }
 
@@ -74,6 +77,9 @@ fn chapter_txt_relative_path(chapter_id: &str) -> String {
 fn list_chapters_sync(project_path: String) -> Result<Vec<ChapterMeta>, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let mut index = read_index(&project_root)?;
     index.chapters.sort_by_key(|c| c.order);
@@ -83,6 +89,9 @@ fn list_chapters_sync(project_path: String) -> Result<Vec<ChapterMeta>, String> 
 fn create_chapter_sync(project_path: String, title: String) -> Result<ChapterMeta, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let mut index = read_index(&project_root)?;
 
@@ -128,7 +137,10 @@ fn create_chapter_sync(project_path: String, title: String) -> Result<ChapterMet
 
     index.chapters.push(meta.clone());
     index.next_id = index.next_id.saturating_add(1);
-    write_index(&project_root, &index)?;
+    if let Err(e) = write_index(&project_root, &index) {
+        let _ = fs::remove_file(&chapter_path);
+        return Err(e);
+    }
 
     Ok(meta)
 }
@@ -145,6 +157,9 @@ pub(crate) fn create_chapter_with_content_sync(
 fn get_chapter_content_sync(project_path: String, chapter_id: String) -> Result<String, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
     validate_chapter_id(&chapter_id)?;
 
     let relative = chapter_txt_relative_path(&chapter_id);
@@ -163,6 +178,9 @@ fn save_chapter_content_sync(
 ) -> Result<ChapterMeta, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
     validate_chapter_id(&chapter_id)?;
 
     let mut index = read_index(&project_root)?;
@@ -176,15 +194,26 @@ fn save_chapter_content_sync(
         return Err("Chapter file does not exist".to_string());
     }
 
-    fs::write(&chapter_path, content.as_bytes())
-        .map_err(|e| format!("Failed to write chapter content: {e}"))?;
+    let chapter_backup = write_protection::backup_existing_file(&project_root, &chapter_path)?;
+    if let Err(e) = write_protection::atomic_write_bytes(
+        &chapter_path,
+        content.as_bytes(),
+        chapter_backup.as_deref(),
+    ) {
+        return Err(format!("Failed to write chapter content: {e}"));
+    }
 
     let now = now_unix_seconds()?;
     meta.updated = now;
     meta.word_count = count_words(&content);
 
     let updated_meta = meta.clone();
-    write_index(&project_root, &index)?;
+    if let Err(e) = write_index(&project_root, &index) {
+        if let Some(backup) = chapter_backup.as_ref() {
+            let _ = write_protection::restore_backup(&chapter_path, backup);
+        }
+        return Err(e);
+    }
     Ok(updated_meta)
 }
 
@@ -195,6 +224,9 @@ fn rename_chapter_sync(
 ) -> Result<ChapterMeta, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
     validate_chapter_id(&chapter_id)?;
 
     let mut index = read_index(&project_root)?;
@@ -214,6 +246,9 @@ fn rename_chapter_sync(
 fn delete_chapter_sync(project_path: String, chapter_id: String) -> Result<(), String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
     validate_chapter_id(&chapter_id)?;
 
     let mut index = read_index(&project_root)?;
@@ -225,6 +260,7 @@ fn delete_chapter_sync(project_path: String, chapter_id: String) -> Result<(), S
 
     let relative = chapter_txt_relative_path(&chapter_id);
     let chapter_path = validate_path(&project_root, &relative)?;
+    let chapter_backup = write_protection::backup_existing_file(&project_root, &chapter_path)?;
     match fs::remove_file(&chapter_path) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -242,7 +278,12 @@ fn delete_chapter_sync(project_path: String, chapter_id: String) -> Result<(), S
         }
     }
 
-    write_index(&project_root, &index)?;
+    if let Err(e) = write_index(&project_root, &index) {
+        if let Some(backup) = chapter_backup.as_ref() {
+            let _ = write_protection::restore_backup(&chapter_path, backup);
+        }
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -252,6 +293,9 @@ fn reorder_chapters_sync(
 ) -> Result<Vec<ChapterMeta>, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     if chapter_ids.is_empty() {
         return Err("chapter_ids is empty".to_string());
