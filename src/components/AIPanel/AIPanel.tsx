@@ -5,7 +5,11 @@ import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
 import SessionList from "./SessionList";
-import { aiChat, type ChatMessage } from "../../lib/ai";
+import { aiChat, DEFAULT_SYSTEM_PROMPT, type ChatMessage } from "../../lib/ai";
+import { buildSystemPrompt, getWritingPresets, saveWritingPresets } from "../../lib/writingPresets";
+import { createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
+import PresetSelector from "./PresetSelector";
+import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
   addSessionMessage,
   createSession,
@@ -58,6 +62,11 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [mode, setMode] = useState<SessionMode>(defaultMode());
   const [messagesInSession, setMessagesInSession] = useState<PanelMessage[]>([]);
+  const [presets, setPresets] = useState<WritingPreset[]>([]);
+  const [activePresetId, setActivePresetId] = useState<string>(createDefaultWritingPreset().id);
+  const [presetSettingsOpen, setPresetSettingsOpen] = useState(false);
+  const [loadingPresets, setLoadingPresets] = useState(false);
+  const [savingPresets, setSavingPresets] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -69,6 +78,32 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const realStreamingRef = useRef(false);
 
   const currentKey = useMemo(() => storageCurrentKey(projectPath), [projectPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoadingPresets(true);
+      try {
+        const result = await getWritingPresets(projectPath);
+        if (cancelled) return;
+        setPresets(result.presets);
+        setActivePresetId(result.activePresetId);
+      } catch (error) {
+        if (cancelled) return;
+        message.error(`加载写作预设失败: ${String(error)}`);
+        const fallback = createDefaultWritingPreset();
+        setPresets([fallback]);
+        setActivePresetId(fallback.id);
+      } finally {
+        if (!cancelled) setLoadingPresets(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,7 +260,17 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   }, [projectPath, currentSessionId]);
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null;
-  const busy = loading || loadingSessions || loadingMessages;
+  const busy = loading || loadingSessions || loadingMessages || savingPresets;
+
+  const activePreset = useMemo(() => {
+    if (!presets.length) return createDefaultWritingPreset();
+    return (
+      presets.find((p) => p.id === activePresetId) ??
+      presets.find((p) => p.isDefault) ??
+      presets[0] ??
+      createDefaultWritingPreset()
+    );
+  }, [presets, activePresetId]);
 
   const selectSession = (id: string | null) => {
     setCurrentSessionId(id);
@@ -311,9 +356,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         .slice(-20)
         .map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
 
+      const systemPrompt =
+        mode === "Continue" ? buildSystemPrompt(activePreset, DEFAULT_SYSTEM_PROMPT) : DEFAULT_SYSTEM_PROMPT;
+
       const reply = await aiChat({
         projectDir: projectPath,
         messages: messagesForAi,
+        systemPrompt,
       });
 
       const streamPromise = realStreamingRef.current
@@ -355,6 +404,34 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     }
   };
 
+  const handleSelectPreset = (presetId: string) => {
+    if (!presetId || presetId === activePresetId) return;
+    const previous = activePresetId;
+    setActivePresetId(presetId);
+
+    setSavingPresets(true);
+    void saveWritingPresets({ projectPath, presets, activePresetId: presetId })
+      .catch((error) => {
+        message.error(`保存当前预设失败: ${String(error)}`);
+        setActivePresetId(previous);
+      })
+      .finally(() => {
+        setSavingPresets(false);
+      });
+  };
+
+  const handleSavePresets = async (nextPresets: WritingPreset[], nextActiveId: string) => {
+    setSavingPresets(true);
+    try {
+      await saveWritingPresets({ projectPath, presets: nextPresets, activePresetId: nextActiveId });
+      setPresets(nextPresets);
+      setActivePresetId(nextActiveId);
+      message.success("写作预设已保存");
+    } finally {
+      setSavingPresets(false);
+    }
+  };
+
   return (
     <div className="ai-panel-root">
       <div className="ai-panel-header">
@@ -389,6 +466,16 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           />
         </div>
 
+        {mode === "Continue" ? (
+          <PresetSelector
+            presets={presets.length ? presets : [createDefaultWritingPreset()]}
+            activePresetId={activePresetId}
+            onSelect={handleSelectPreset}
+            onOpenSettings={() => setPresetSettingsOpen(true)}
+            disabled={busy || loadingPresets}
+          />
+        ) : null}
+
         <div className="ai-panel-session">
           <SessionList
             sessions={sessions
@@ -400,6 +487,14 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           />
         </div>
       </div>
+
+      <PresetSettingsDrawer
+        open={presetSettingsOpen}
+        onClose={() => setPresetSettingsOpen(false)}
+        presets={presets.length ? presets : [createDefaultWritingPreset()]}
+        activePresetId={activePresetId}
+        onSave={handleSavePresets}
+      />
 
       {configMissing ? (
         <div className="ai-panel-warning">

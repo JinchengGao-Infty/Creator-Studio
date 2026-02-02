@@ -5,6 +5,7 @@ mod config;
 mod file_ops;
 mod import;
 mod keyring_store;
+mod presets;
 mod project;
 mod recent_projects;
 mod security;
@@ -20,6 +21,7 @@ use file_ops::{
     ListResult, ReadParams, ReadResult, SearchParams, SearchResult, WriteParams,
 };
 use import::{import_txt, preview_import_txt};
+use presets::{get_presets, save_presets};
 use project::{create_project, get_project_info, open_project, save_project_config};
 use recent_projects::{add_recent_project, get_recent_projects};
 use session::{
@@ -272,6 +274,8 @@ pub fn run() {
             open_project,
             get_project_info,
             save_project_config,
+            get_presets,
+            save_presets,
             list_chapters,
             create_chapter,
             get_chapter_content,

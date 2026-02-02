@@ -23,6 +23,10 @@
   margin-bottom: 10px;
 }
 
+.ai-panel-preset {
+  margin-bottom: 10px;
+}
+
 .ai-panel-warning {
   padding: 12px;
   border-bottom: 1px solid var(--border);
@@ -236,6 +240,42 @@
   padding: 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
+}
+
+.rules-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.rules-list .ant-input {
+  min-width: 160px;
+  flex: 1;
+}
+
+.writing-preset-item {
+  cursor: pointer;
+  user-select: none;
+}
+
+.writing-preset-item.active {
+  background: var(--bg-tertiary);
+}
+
+.writing-preset-check {
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.writing-preset-drawer-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
 }
 
 .chat-input-actions {
