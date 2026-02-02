@@ -3,6 +3,7 @@ mod ai_bridge;
 mod chapter;
 mod config;
 mod file_ops;
+mod import;
 mod keyring_store;
 mod project;
 mod recent_projects;
@@ -17,6 +18,7 @@ use file_ops::{
     append_file, list_dir, read_file, search_in_files, write_file, AppendParams, ListParams,
     ListResult, ReadParams, ReadResult, SearchParams, SearchResult, WriteParams,
 };
+use import::{import_txt, preview_import_txt};
 use project::{create_project, get_project_info, open_project, save_project_config};
 use recent_projects::{add_recent_project, get_recent_projects};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -271,7 +273,9 @@ pub fn run() {
             save_chapter_content,
             rename_chapter,
             delete_chapter,
-            reorder_chapters
+            reorder_chapters,
+            preview_import_txt,
+            import_txt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

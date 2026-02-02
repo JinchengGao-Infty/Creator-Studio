@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Input, Modal, message } from "antd";
-import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ImportOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import ChapterItem, { type ChapterMeta } from "./ChapterItem";
+import ImportModal from "../Project/ImportModal";
 import "../../styles/sidebar.css";
 
 interface ChapterListProps {
@@ -20,6 +21,7 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
   const [createOpen, setCreateOpen] = useState(false);
   const [createTitle, setCreateTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -147,6 +149,12 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
           />
           <Button
             type="text"
+            icon={<ImportOutlined />}
+            onClick={() => setImportOpen(true)}
+            title="导入 TXT"
+          />
+          <Button
+            type="text"
             icon={<PlusOutlined />}
             onClick={openCreate}
             title="新建章节"
@@ -196,6 +204,16 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
           autoFocus
         />
       </Modal>
+
+      <ImportModal
+        visible={importOpen}
+        projectPath={projectPath}
+        onCancel={() => setImportOpen(false)}
+        onSuccess={() => {
+          setImportOpen(false);
+          void load();
+        }}
+      />
     </div>
   );
 }
