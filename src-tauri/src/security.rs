@@ -1,58 +1,64 @@
 use std::path::{Component, Path, PathBuf};
 
-fn canonical_project_dir(project_dir: &Path) -> Result<PathBuf, String> {
-    std::fs::canonicalize(project_dir)
-        .map_err(|e| format!("Failed to canonicalize project dir: {e}"))
-}
-
-fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
-    let mut current = path.to_path_buf();
-    loop {
-        if current.exists() {
-            return std::fs::canonicalize(&current)
-                .map_err(|e| format!("Failed to canonicalize path: {e}"));
-        }
-        if !current.pop() {
-            return Err("Invalid path".to_string());
-        }
-    }
-}
-
-// 核心函数：路径安全校验
-//
-// 要求：
-// - 禁止 ".." 越界
-// - 禁止绝对路径
-// - 返回规范化的完整路径
-// - 确保最终路径在 project_dir 下
 pub fn validate_path(project_dir: &Path, relative_path: &str) -> Result<PathBuf, String> {
-    let project_dir = canonical_project_dir(project_dir)?;
-    let input = Path::new(relative_path);
+    let project_dir = project_dir
+        .canonicalize()
+        .map_err(|e| format!("Invalid project_dir: {e}"))?;
 
-    if input.is_absolute() {
+    let raw = Path::new(relative_path);
+
+    if raw.as_os_str().is_empty() {
+        return Ok(project_dir);
+    }
+
+    if raw.is_absolute() {
         return Err("Absolute paths are not allowed".to_string());
     }
 
-    let mut full_path = project_dir.clone();
-    for component in input.components() {
+    let mut cleaned = PathBuf::new();
+    for component in raw.components() {
         match component {
-            Component::CurDir => continue,
-            Component::Normal(part) => full_path.push(part),
-            Component::ParentDir => {
-                return Err("Parent directory (..) is not allowed".to_string());
-            }
-            Component::RootDir | Component::Prefix(_) => {
+            Component::Prefix(_) | Component::RootDir => {
                 return Err("Absolute paths are not allowed".to_string());
             }
+            Component::ParentDir => {
+                return Err("Parent directory '..' is not allowed".to_string());
+            }
+            Component::CurDir => {}
+            Component::Normal(part) => cleaned.push(part),
         }
     }
 
-    // 防止通过 symlink 越界：验证已存在的最近祖先仍在 project_dir 内
-    let existing_ancestor = canonicalize_existing_ancestor(&full_path)?;
-    if !existing_ancestor.starts_with(&project_dir) {
-        return Err("Path escapes project directory".to_string());
+    let joined = project_dir.join(&cleaned);
+
+    // Resolve the deepest existing ancestor so we can detect symlink escapes even when the
+    // final path doesn't exist yet (e.g. on writes).
+    let mut existing = joined.clone();
+    while !existing.exists() {
+        let Some(parent) = existing.parent() else {
+            break;
+        };
+        existing = parent.to_path_buf();
+        if existing == project_dir {
+            break;
+        }
     }
 
-    Ok(full_path)
-}
+    let existing_canon = existing
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {e}"))?;
 
+    if !existing_canon.starts_with(&project_dir) {
+        return Err("Path escapes project_dir".to_string());
+    }
+
+    if existing == joined {
+        return Ok(existing_canon);
+    }
+
+    let suffix = joined
+        .strip_prefix(&existing)
+        .map_err(|_| "Failed to normalize path".to_string())?;
+
+    Ok(existing_canon.join(suffix))
+}

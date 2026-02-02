@@ -1,48 +1,60 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::security::validate_path;
 
-// 参数
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct WriteParams {
-    pub path: String,     // 相对路径
-    pub content: String,  // 文件内容
+    pub path: String,
+    pub content: String,
 }
 
-fn unix_timestamp() -> Result<u64, String> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|e| format!("Failed to get timestamp: {e}"))
-}
+pub fn write_file(project_dir: &Path, params: WriteParams) -> Result<(), String> {
+    let project_root = project_dir
+        .canonicalize()
+        .map_err(|e| format!("Invalid project_dir: {e}"))?;
 
-// 写入文件内容（会自动备份旧内容）
-pub fn file_write(project_dir: String, params: WriteParams) -> Result<(), String> {
-    let project_dir_path = Path::new(&project_dir);
-    let target_path = validate_path(project_dir_path, &params.path)?;
+    let full_path = validate_path(&project_root, &params.path)?;
 
-    // 写入前检查文件是否存在，如果存在则备份
-    if target_path.exists() {
-        let ts = unix_timestamp()?;
-        let backup_base = validate_path(project_dir_path, &format!(".backup/{ts}"))?;
-        let backup_path = backup_base.join(&params.path);
+    if full_path.exists() {
+        let meta = fs::symlink_metadata(&full_path)
+            .map_err(|e| format!("Failed to stat '{}': {e}", params.path))?;
+        if meta.file_type().is_dir() {
+            return Err(format!("'{}' is a directory", params.path));
+        }
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Failed to read system time: {e}"))?
+            .as_millis();
+
+        let relative = full_path
+            .strip_prefix(&project_root)
+            .map_err(|_| "Failed to compute relative path".to_string())?;
+
+        let backup_path = project_root
+            .join(".backup")
+            .join(ts.to_string())
+            .join(relative);
 
         if let Some(parent) = backup_path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create backup dir: {e}"))?;
+                .map_err(|e| format!("Failed to create backup directory: {e}"))?;
         }
 
-        fs::copy(&target_path, &backup_path).map_err(|e| format!("Failed to backup file: {e}"))?;
+        fs::copy(&full_path, &backup_path)
+            .map_err(|e| format!("Failed to backup '{}': {e}", params.path))?;
     }
 
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {e}"))?;
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory '{}': {e}", parent.display()))?;
     }
 
-    fs::write(&target_path, params.content).map_err(|e| format!("Failed to write file: {e}"))?;
+    fs::write(&full_path, params.content)
+        .map_err(|e| format!("Failed to write '{}': {e}", params.path))?;
+
     Ok(())
 }
-
