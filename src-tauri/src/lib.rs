@@ -1,8 +1,13 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod chapter;
 mod file_ops;
 mod project;
 mod security;
 
+use chapter::{
+    create_chapter, delete_chapter, get_chapter_content, list_chapters, rename_chapter,
+    reorder_chapters, save_chapter_content,
+};
 use file_ops::{
     append_file, list_dir, read_file, search_in_files, write_file, AppendParams, ListParams,
     ListResult, ReadParams, ReadResult, SearchParams, SearchResult, WriteParams,
@@ -53,7 +58,14 @@ pub fn run() {
             create_project,
             open_project,
             get_project_info,
-            save_project_config
+            save_project_config,
+            list_chapters,
+            create_chapter,
+            get_chapter_content,
+            save_chapter_content,
+            rename_chapter,
+            delete_chapter,
+            reorder_chapters
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -188,5 +200,80 @@ mod tests {
         let info2 = tauri::async_runtime::block_on(get_project_info(project_path.clone()))
             .expect("get_project_info after save");
         assert_eq!(info2.name, "新名称");
+    }
+
+    #[test]
+    fn chapter_crud_smoke_test() {
+        let temp = TempDir::new("creatorai-v2-chapter");
+        let project_root = temp.path.join("MyNovel");
+        let project_path = project_root.to_string_lossy().to_string();
+
+        tauri::async_runtime::block_on(create_project(
+            project_path.clone(),
+            "我的小说".to_string(),
+        ))
+        .expect("create_project");
+
+        let chapters =
+            tauri::async_runtime::block_on(list_chapters(project_path.clone())).expect("list");
+        assert!(chapters.is_empty());
+
+        let ch1 = tauri::async_runtime::block_on(create_chapter(
+            project_path.clone(),
+            "第一章 开端".to_string(),
+        ))
+        .expect("create_chapter");
+        assert_eq!(ch1.id, "chapter_001");
+        assert_eq!(ch1.order, 1);
+
+        let content = tauri::async_runtime::block_on(get_chapter_content(
+            project_path.clone(),
+            ch1.id.clone(),
+        ))
+        .expect("get_chapter_content");
+        assert_eq!(content, "");
+
+        let saved = tauri::async_runtime::block_on(save_chapter_content(
+            project_path.clone(),
+            ch1.id.clone(),
+            "你好 世界".to_string(),
+        ))
+        .expect("save_chapter_content");
+        assert_eq!(saved.word_count, 4);
+
+        let renamed = tauri::async_runtime::block_on(rename_chapter(
+            project_path.clone(),
+            ch1.id.clone(),
+            "第一章 新标题".to_string(),
+        ))
+        .expect("rename_chapter");
+        assert_eq!(renamed.title, "第一章 新标题");
+
+        let ch2 = tauri::async_runtime::block_on(create_chapter(
+            project_path.clone(),
+            "第二章".to_string(),
+        ))
+        .expect("create_chapter 2");
+        assert_eq!(ch2.id, "chapter_002");
+        assert_eq!(ch2.order, 2);
+
+        let reordered = tauri::async_runtime::block_on(reorder_chapters(
+            project_path.clone(),
+            vec![ch2.id.clone(), ch1.id.clone()],
+        ))
+        .expect("reorder_chapters");
+        assert_eq!(reordered[0].id, "chapter_002");
+        assert_eq!(reordered[0].order, 1);
+        assert_eq!(reordered[1].id, "chapter_001");
+        assert_eq!(reordered[1].order, 2);
+
+        tauri::async_runtime::block_on(delete_chapter(project_path.clone(), ch2.id.clone()))
+            .expect("delete_chapter");
+
+        let chapters2 =
+            tauri::async_runtime::block_on(list_chapters(project_path.clone())).expect("list 2");
+        assert_eq!(chapters2.len(), 1);
+        assert_eq!(chapters2[0].id, "chapter_001");
+        assert_eq!(chapters2[0].order, 1);
     }
 }
