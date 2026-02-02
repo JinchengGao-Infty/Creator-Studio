@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button, Input, Modal, message } from "antd";
 import { ImportOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import ChapterItem, { type ChapterMeta } from "./ChapterItem";
+import ChapterSummary from "./ChapterSummary";
 import ImportModal from "../Project/ImportModal";
 import "../../styles/sidebar.css";
 import { formatError } from "../../utils/error";
@@ -227,6 +228,12 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
           </div>
         )}
       </div>
+
+      <ChapterSummary
+        projectPath={projectPath}
+        chapterId={currentChapterId}
+        chapterTitle={chapters.find((c) => c.id === currentChapterId)?.title ?? null}
+      />
 
       <Modal
         title="新建章节"

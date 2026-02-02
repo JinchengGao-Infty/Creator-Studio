@@ -661,6 +661,15 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         );
       }
 
+      const summarySaved = toolCalls.some((c) => c.name === "save_summary" && c.status === "success");
+      if (summarySaved) {
+        window.dispatchEvent(
+          new CustomEvent("creatorai:summariesChanged", {
+            detail: { projectPath, chapterId: resolved?.chapterId ?? null },
+          }),
+        );
+      }
+
       if (mode === "Continue" && allowWrite && typeof sourceDraftMessageId === "string" && appended) {
         try {
           await updateMessageMetadata({
@@ -791,15 +800,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           />
         </div>
 
-        {mode === "Continue" ? (
-          <PresetSelector
-            presets={presets.length ? presets : [createDefaultWritingPreset()]}
-            activePresetId={activePresetId}
-            onSelect={handleSelectPreset}
-            onOpenSettings={() => setPresetSettingsOpen(true)}
-            disabled={busy || loadingPresets}
-          />
-        ) : null}
+        <PresetSelector
+          presets={presets.length ? presets : [createDefaultWritingPreset()]}
+          activePresetId={activePresetId}
+          onSelect={handleSelectPreset}
+          onOpenSettings={() => setPresetSettingsOpen(true)}
+          disabled={busy || loadingPresets}
+        />
 
         <div className="ai-panel-session">
           <SessionList

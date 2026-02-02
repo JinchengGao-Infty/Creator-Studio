@@ -18,6 +18,46 @@
   overflow: auto;
 }
 
+.chapter-summary {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chapter-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chapter-summary-body {
+  min-height: 72px;
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-tertiary);
+}
+
+.chapter-summary-content {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.chapter-summary-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.chapter-summary-footer {
+  display: flex;
+}
+
 .chapter-item {
   padding: 12px;
   cursor: pointer;
@@ -45,4 +85,3 @@
   font-size: 12px;
   color: var(--text-muted);
 }
-

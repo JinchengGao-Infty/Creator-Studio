@@ -30,6 +30,7 @@ use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
     rename_session, update_message_metadata, compact_session,
 };
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
@@ -219,6 +220,44 @@ fn file_search(project_dir: String, params: SearchParams) -> Result<SearchResult
     search_in_files(std::path::Path::new(&project_dir), params)
 }
 
+// ===== Summary Commands =====
+
+#[tauri::command(rename_all = "camelCase")]
+fn load_summaries(project_path: String) -> Result<Vec<summary::SummaryEntry>, String> {
+    summary::load_summaries(Path::new(&project_path))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_latest_summary(
+    project_path: String,
+    chapter_id: String,
+) -> Result<Option<summary::SummaryEntry>, String> {
+    let summaries = summary::load_summaries(Path::new(&project_path))?;
+    let mut best: Option<summary::SummaryEntry> = None;
+    for entry in summaries {
+        if entry.chapter_id != chapter_id {
+            continue;
+        }
+        let should_replace = best
+            .as_ref()
+            .map(|b| entry.created_at >= b.created_at)
+            .unwrap_or(true);
+        if should_replace {
+            best = Some(entry);
+        }
+    }
+    Ok(best)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn save_summary_entry(
+    project_path: String,
+    chapter_id: String,
+    summary: String,
+) -> Result<summary::SummaryEntry, String> {
+    summary::save_summary(Path::new(&project_path), chapter_id, summary)
+}
+
 // ===== AI Chat Command =====
 
 #[tauri::command(rename_all = "camelCase")]
@@ -292,6 +331,9 @@ pub fn run() {
             file_append,
             file_list,
             file_search,
+            load_summaries,
+            get_latest_summary,
+            save_summary_entry,
             ai_chat,
             get_recent_projects,
             add_recent_project,
