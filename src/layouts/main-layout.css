@@ -1,0 +1,72 @@
+.main-layout {
+  display: grid;
+  grid-template-columns: 48px 240px 1fr 360px;
+  grid-template-rows: 1fr 28px;
+  height: 100vh;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.activity-bar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.sidebar {
+  grid-column: 2;
+  grid-row: 1;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sidebar-header {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-project-title {
+  margin-bottom: 4px;
+}
+
+.sidebar-project-path {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.sidebar-project-actions {
+  margin-top: 10px;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow: auto;
+  padding: 0;
+}
+
+.editor-area {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.ai-panel {
+  grid-column: 4;
+  grid-row: 1;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  display: flex;
+  min-width: 0;
+}
+
+.status-bar-container {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+}

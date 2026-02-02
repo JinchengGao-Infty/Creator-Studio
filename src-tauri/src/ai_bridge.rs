@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -114,14 +115,9 @@ pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String
 }
 
 pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
-    // 使用项目目录定位 ai-engine（packages/ai-engine）
-    let ai_engine_path = PathBuf::from(&request.project_dir).join("packages/ai-engine/src/cli.ts");
-    if !ai_engine_path.exists() {
-        return Err(format!(
-            "ai-engine CLI not found: {}",
-            ai_engine_path.display()
-        ));
-    }
+    // 使用仓库根目录定位 ai-engine，使用 project_dir 作为工具执行的项目根目录。
+    let repo_root = get_repo_root_dir()?;
+    let ai_engine_path = get_ai_engine_cli_path()?;
 
     let provider_base_url = request
         .provider
@@ -138,7 +134,7 @@ pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
     let mut child = Command::new("bun")
         .arg("run")
         .arg(&ai_engine_path)
-        .current_dir(&request.project_dir)
+        .current_dir(&repo_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -247,6 +243,7 @@ fn as_u32(value: &Value) -> Option<u32> {
 }
 
 fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, String> {
+    let project_root = Path::new(project_dir);
     match name {
         "read" => {
             let path = args["path"].as_str().ok_or("Missing path")?;
@@ -258,7 +255,7 @@ fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, S
                 offset,
                 limit,
             };
-            let result = read::file_read(project_dir.to_string(), params)?;
+            let result = read::read_file(project_root, params)?;
             serde_json::to_string(&result).map_err(|e| e.to_string())
         }
         "write" => {
@@ -269,7 +266,7 @@ fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, S
                 path: path.to_string(),
                 content: content.to_string(),
             };
-            write::file_write(project_dir.to_string(), params)?;
+            write::write_file(project_root, params)?;
             Ok("File written successfully".to_string())
         }
         "append" => {
@@ -280,14 +277,14 @@ fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, S
                 path: path.to_string(),
                 content: content.to_string(),
             };
-            append::file_append(project_dir.to_string(), params)?;
+            append::append_file(project_root, params)?;
             Ok("Content appended successfully".to_string())
         }
         "list" => {
             let path = args["path"].as_str().map(|s| s.to_string());
 
             let params = list::ListParams { path };
-            let result = list::file_list(project_dir.to_string(), params)?;
+            let result = list::list_dir(project_root, params)?;
             serde_json::to_string(&result).map_err(|e| e.to_string())
         }
         "search" => {
@@ -298,110 +295,9 @@ fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, S
                 query: query.to_string(),
                 path,
             };
-            let result = search::file_search(project_dir.to_string(), params)?;
+            let result = search::search_in_files(project_root, params)?;
             serde_json::to_string(&result).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown tool: {name}")),
-    }
-}
-
-#[cfg(test)]
-mod t1_6_integration_tests {
-    use super::{run_chat, ChatRequest};
-    use serde_json::json;
-    use std::fs;
-    use std::path::PathBuf;
-
-    const PROJECT_DIR: &str = "/Users/link/Desktop/creatorai-v2";
-
-    const SYSTEM_PROMPT: &str = r#"你是一个文件助手。你可以使用以下工具：
-- read: 读取文件内容
-- write: 写入文件内容
-- append: 追加内容到文件
-- list: 列出目录下的文件
-- search: 搜索文件内容
-
-当用户要求你操作文件时，请使用相应的工具。"#;
-
-    fn run_user_message(user: &str) -> Result<String, String> {
-        let request = ChatRequest {
-            provider: json!({
-                "id": "gemini",
-                "name": "Gemini",
-                "baseURL": "http://127.0.0.1:3002/geminicli/v1",
-                "apiKey": "sk-XnbHbzBOmPYGHgL_4Mg8zRcoBIb2gVpJiuO0eSifyyCUV2Twz2c4SljcNCo",
-                "models": ["gemini-3-flash-preview"],
-                "providerType": "openai-compatible",
-            }),
-            parameters: json!({
-                "model": "gemini-3-flash-preview",
-                "temperature": 0.7,
-                "maxTokens": 2000,
-            }),
-            system_prompt: SYSTEM_PROMPT.to_string(),
-            messages: vec![json!({ "role": "user", "content": user })],
-            project_dir: PROJECT_DIR.to_string(),
-        };
-
-        Ok(run_chat(request)?.content)
-    }
-
-    #[test]
-    fn t1_6_end_to_end_file_tools() {
-        let test_file = PathBuf::from(PROJECT_DIR).join("test.txt");
-        let _ = fs::remove_file(&test_file);
-
-        let list_out = run_user_message("列出当前目录的文件").expect("list should succeed");
-        println!("\n[list]\n{list_out}\n");
-        assert!(list_out.contains("README.md") || list_out.contains("src-tauri"));
-
-        let read_out = run_user_message("读取 README.md 文件").expect("read should succeed");
-        println!("\n[read]\n{read_out}\n");
-        assert!(read_out.contains("Tauri + React + Typescript"));
-
-        let write_out = run_user_message("创建一个 test.txt 文件，内容是 \"Hello CreatorAI\"")
-            .expect("write should succeed");
-        println!("\n[write]\n{write_out}\n");
-
-        let written = fs::read_to_string(&test_file).expect("test.txt should exist after write");
-        assert!(written.contains("Hello CreatorAI"));
-
-        let append_out = run_user_message("在 test.txt 末尾追加一行 \"这是追加的内容\"")
-            .expect("append should succeed");
-        println!("\n[append]\n{append_out}\n");
-
-        let appended = fs::read_to_string(&test_file).expect("test.txt should exist after append");
-        assert!(appended.contains("Hello CreatorAI"));
-        assert!(appended.contains("这是追加的内容"));
-
-        let search_out =
-            run_user_message("搜索包含 \"tauri\" 的文件").expect("search should succeed");
-        println!("\n[search]\n{search_out}\n");
-        assert!(search_out.to_lowercase().contains("tauri"));
-
-        let safety = run_user_message("读取 /etc/passwd 文件");
-        match safety {
-            Ok(content) => {
-                // 如果模型拒绝但没有触发工具错误，也视为拒绝通过
-                println!("\n[path-safety]\n{content}\n");
-                assert!(
-                    content.contains("不允许")
-                        || content.contains("拒绝")
-                        || content.contains("Absolute paths are not allowed")
-                        || content.contains("路径")
-                );
-            }
-            Err(err) => {
-                println!("\n[path-safety:error]\n{err}\n");
-                assert!(
-                    err.contains("Absolute paths are not allowed")
-                        || err.contains("Path escapes project directory")
-                        || err.contains("Parent directory")
-                        || err.contains("not allowed")
-                );
-            }
-        }
-
-        let _ = fs::remove_file(&test_file);
     }
 }

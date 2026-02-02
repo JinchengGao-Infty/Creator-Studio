@@ -1,0 +1,44 @@
+.activity-bar {
+  width: 48px;
+  min-width: 48px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 0;
+}
+
+.activity-bar-items {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.activity-bar-spacer {
+  flex: 1;
+}
+
+.activity-bar-item {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.activity-bar-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.activity-bar-item.active {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+

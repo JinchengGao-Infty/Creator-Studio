@@ -1,22 +1,186 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod ai_bridge;
 mod chapter;
+mod config;
 mod file_ops;
+mod keyring_store;
 mod project;
+mod recent_projects;
 mod security;
 
 use chapter::{
     create_chapter, delete_chapter, get_chapter_content, list_chapters, rename_chapter,
     reorder_chapters, save_chapter_content,
 };
+use config::{GlobalConfig, ModelParameters, Provider};
 use file_ops::{
     append_file, list_dir, read_file, search_in_files, write_file, AppendParams, ListParams,
     ListResult, ReadParams, ReadResult, SearchParams, SearchResult, WriteParams,
 };
 use project::{create_project, get_project_info, open_project, save_project_config};
+use recent_projects::{add_recent_project, get_recent_projects};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+// ===== Config Commands =====
+
+#[tauri::command]
+fn get_config() -> Result<GlobalConfig, String> {
+    config::load_config()
+}
+
+#[tauri::command]
+fn save_config(config: GlobalConfig) -> Result<(), String> {
+    config::save_config(&config)
+}
+
+// ===== Provider Commands =====
+
+#[tauri::command]
+fn list_providers() -> Result<Vec<Provider>, String> {
+    let config = config::load_config()?;
+    Ok(config.providers)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_provider(provider_id: String) -> Result<Provider, String> {
+    let config = config::load_config()?;
+    let provider = config
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .ok_or(format!("Provider {} not found", provider_id))?;
+    Ok(provider.clone())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn add_provider(provider: Provider, api_key: String) -> Result<(), String> {
+    keyring_store::store_api_key(&provider.id, &api_key)?;
+
+    let mut config = config::load_config()?;
+    if config.providers.iter().any(|p| p.id == provider.id) {
+        return Err(format!("Provider {} already exists", provider.id));
+    }
+
+    config.providers.push(provider);
+    config::save_config(&config)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn update_provider(provider: Provider, api_key: Option<String>) -> Result<(), String> {
+    if let Some(key) = api_key {
+        keyring_store::store_api_key(&provider.id, &key)?;
+    }
+
+    let mut config = config::load_config()?;
+    if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider.id) {
+        *p = provider;
+    } else {
+        return Err(format!("Provider {} not found", provider.id));
+    }
+
+    config::save_config(&config)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn delete_provider(provider_id: String) -> Result<(), String> {
+    keyring_store::delete_api_key(&provider_id)?;
+
+    let mut config = config::load_config()?;
+    config.providers.retain(|p| p.id != provider_id);
+
+    if config.active_provider_id.as_ref() == Some(&provider_id) {
+        config.active_provider_id = None;
+    }
+
+    config::save_config(&config)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn set_active_provider(provider_id: String) -> Result<(), String> {
+    let mut config = config::load_config()?;
+
+    if !config.providers.iter().any(|p| p.id == provider_id) {
+        return Err(format!("Provider {} not found", provider_id));
+    }
+
+    config.active_provider_id = Some(provider_id);
+    config::save_config(&config)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_api_key(provider_id: String) -> Result<Option<String>, String> {
+    keyring_store::get_api_key(&provider_id)
+}
+
+// ===== Parameters Commands =====
+
+#[tauri::command]
+fn get_default_parameters() -> Result<ModelParameters, String> {
+    let config = config::load_config()?;
+    Ok(config.default_parameters)
+}
+
+#[tauri::command]
+fn set_default_parameters(parameters: ModelParameters) -> Result<(), String> {
+    let mut config = config::load_config()?;
+    config.default_parameters = parameters;
+    config::save_config(&config)
+}
+
+// ===== Models Commands =====
+
+#[tauri::command(rename_all = "camelCase")]
+async fn refresh_provider_models(provider_id: String) -> Result<Vec<String>, String> {
+    let provider = {
+        let config = config::load_config()?;
+        config
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or(format!("Provider {} not found", provider_id))?
+            .clone()
+    };
+
+    let api_key = keyring_store::get_api_key(&provider_id)?
+        .ok_or(format!("API Key not found for provider {}", provider_id))?;
+
+    let base_url = provider.base_url.clone();
+    let api_key_for_task = api_key.clone();
+    let models = tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::fetch_models(&base_url, &api_key_for_task)
+    })
+    .await
+    .map_err(|e| format!("refresh_provider_models join error: {e}"))??;
+
+    let mut config = config::load_config()?;
+    if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider_id) {
+        p.models = models.clone();
+        p.models_updated_at = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
+    }
+    config::save_config(&config)?;
+
+    Ok(models)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_provider_models(provider_id: String) -> Result<Vec<String>, String> {
+    let config = config::load_config()?;
+    let provider = config
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .ok_or(format!("Provider {} not found", provider_id))?;
+    Ok(provider.models.clone())
 }
 
 #[tauri::command]
@@ -44,17 +208,59 @@ fn file_search(project_dir: String, params: SearchParams) -> Result<SearchResult
     search_in_files(std::path::Path::new(&project_dir), params)
 }
 
+// ===== AI Chat Command =====
+
+#[tauri::command(rename_all = "camelCase")]
+async fn ai_chat(
+    provider: serde_json::Value,
+    parameters: serde_json::Value,
+    system_prompt: String,
+    messages: Vec<serde_json::Value>,
+    project_dir: String,
+) -> Result<String, String> {
+    let request = ai_bridge::ChatRequest {
+        provider,
+        parameters,
+        system_prompt,
+        messages,
+        project_dir,
+    };
+
+    let response = tauri::async_runtime::spawn_blocking(move || ai_bridge::run_chat(request))
+        .await
+        .map_err(|e| format!("ai_chat join error: {e}"))??;
+
+    Ok(response.content)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_config,
+            save_config,
+            list_providers,
+            get_provider,
+            add_provider,
+            update_provider,
+            delete_provider,
+            set_active_provider,
+            get_api_key,
+            get_default_parameters,
+            set_default_parameters,
+            refresh_provider_models,
+            get_provider_models,
             file_read,
             file_write,
             file_append,
             file_list,
             file_search,
+            ai_chat,
+            get_recent_projects,
+            add_recent_project,
             create_project,
             open_project,
             get_project_info,
