@@ -60,6 +60,7 @@
 - [ ] T5.4 macOS 打包
 - [ ] T5.5 Windows 打包
 - [ ] T5.6 README 文档
+- [ ] T5.7 上下文压缩 (/compact)
 
 ---
 
