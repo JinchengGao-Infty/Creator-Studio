@@ -31,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test
         working-directory: src-tauri
@@ -44,6 +47,9 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: cargo test
@@ -57,4 +63,3 @@ jobs:
         with:
           name: macos-app
           path: src-tauri/target/release/bundle/macos/*.app
-
