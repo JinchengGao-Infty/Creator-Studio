@@ -59,6 +59,25 @@ fn get_repo_root_dir() -> Result<PathBuf, String> {
 }
 
 fn get_ai_engine_cli_path() -> Result<PathBuf, String> {
+    if let Ok(raw) = std::env::var("CREATORAI_AI_ENGINE_CLI_PATH") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let candidate = PathBuf::from(trimmed);
+            let resolved = if candidate.is_absolute() {
+                candidate
+            } else {
+                get_repo_root_dir()?.join(candidate)
+            };
+            if !resolved.exists() {
+                return Err(format!(
+                    "ai-engine CLI override not found: {}",
+                    resolved.display()
+                ));
+            }
+            return Ok(resolved);
+        }
+    }
+
     let root = get_repo_root_dir()?;
     let ai_engine_path = root.join("packages/ai-engine/src/cli.ts");
     if !ai_engine_path.exists() {
@@ -218,11 +237,13 @@ pub fn run_chat_with_events(
         match response["type"].as_str() {
             Some("done") => {
                 let content = response["content"].as_str().unwrap_or("").to_string();
+                drop(stdin);
                 let _ = child.wait();
                 return Ok(ChatResponse { content, tool_calls });
             }
             Some("error") => {
                 let message = response["message"].as_str().unwrap_or("Unknown error");
+                drop(stdin);
                 let _ = child.wait();
                 return Err(message.to_string());
             }
@@ -292,6 +313,7 @@ pub fn run_chat_with_events(
 
                 if direct_return_tool_results {
                     let content = format_tool_runs(&tool_calls);
+                    drop(stdin);
                     let _ = child.kill();
                     let _ = child.wait();
                     return Ok(ChatResponse { content, tool_calls });
@@ -308,6 +330,7 @@ pub fn run_chat_with_events(
                     .map_err(|e| format!("Failed to flush tool result: {e}"))?;
             }
             _ => {
+                drop(stdin);
                 let _ = child.wait();
                 return Err(format!("Unknown response type: {line}"));
             }
@@ -529,5 +552,376 @@ fn execute_tool(
             serde_json::to_string(&entry).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown tool: {name}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::{ChapterIndex, ChapterMeta};
+    use serde_json::json;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(prefix: &str) -> Self {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("{prefix}-{ts}"));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn create_min_project(root: &Path) {
+        fs::create_dir_all(root.join(".creatorai")).unwrap();
+        fs::create_dir_all(root.join("chapters")).unwrap();
+        fs::write(root.join(".creatorai/config.json"), "{}\n").unwrap();
+        let index = ChapterIndex {
+            chapters: Vec::new(),
+            next_id: 1,
+        };
+        let json = serde_json::to_string_pretty(&index).unwrap();
+        fs::write(root.join("chapters/index.json"), format!("{json}\n")).unwrap();
+    }
+
+    const MOCK_AI_ENGINE_CLI: &str = r#"#!/usr/bin/env bun
+const stdinReader = Bun.stdin.stream().getReader();
+const decoder = new TextDecoder();
+let stdinBuffer = "";
+
+async function readJsonFromStdin() {
+  while (true) {
+    const newlineIndex = stdinBuffer.indexOf("\n");
+    if (newlineIndex !== -1) {
+      const line = stdinBuffer.slice(0, newlineIndex).trim();
+      stdinBuffer = stdinBuffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      return JSON.parse(line);
+    }
+
+    const { done, value } = await stdinReader.read();
+    if (done) {
+      throw new Error("EOF before complete JSON");
+    }
+    stdinBuffer += decoder.decode(value, { stream: true });
+  }
+}
+
+function writeJson(output) {
+  process.stdout.write(JSON.stringify(output) + "\n");
+}
+
+function scenarioFromMessages(messages) {
+  const last = messages?.[messages.length - 1]?.content;
+  if (typeof last !== "string") return "";
+  if (last.includes("__SCENARIO_DISCUSSION_READ__")) return "discussion_read";
+  if (last.includes("__SCENARIO_CONTINUE_APPLY__")) return "continue_apply";
+  if (last.includes("__SCENARIO_READ_MISSING__")) return "read_missing";
+  if (last.includes("__SCENARIO_DISCUSSION_APPEND__")) return "discussion_append";
+  if (last.includes("__SCENARIO_CONTINUE_APPEND__")) return "continue_append";
+  return "";
+}
+
+async function main() {
+  const input = await readJsonFromStdin();
+  if (input?.type !== "chat") {
+    writeJson({ type: "error", message: "Unknown request type" });
+    process.exit(1);
+  }
+
+  const scenario = scenarioFromMessages(input.messages);
+
+  if (scenario === "discussion_read") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_read_1", name: "read", args: { path: "chapters/chapter_001.txt", offset: 0, limit: 20 } },
+      ],
+    });
+    const toolResult = await readJsonFromStdin();
+    const result = toolResult?.results?.find?.((r) => r.id === "call_read_1") ?? toolResult?.results?.[0];
+    let excerpt = "";
+    try {
+      const parsed = JSON.parse(result?.result ?? "{}");
+      const firstLine = String(parsed?.content ?? "").split("\n")[0] ?? "";
+      excerpt = firstLine;
+    } catch {
+      excerpt = "";
+    }
+    writeJson({ type: "done", content: `我读到开头：${excerpt}` });
+    return;
+  }
+
+  if (scenario === "continue_apply") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_append_1", name: "append", args: { path: "chapters/chapter_003.txt", content: "主角发现一个秘密。\n" } },
+        { id: "call_save_summary_1", name: "save_summary", args: { chapterId: "003", summary: "第三章：主角发现秘密，为后续冲突埋伏笔。" } },
+      ],
+    });
+    await readJsonFromStdin();
+    writeJson({ type: "done", content: "已追加并保存摘要。" });
+    return;
+  }
+
+  if (scenario === "read_missing") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_read_missing", name: "read", args: { path: "chapters/chapter_010.txt", offset: 0, limit: 20 } },
+      ],
+    });
+    const toolResult = await readJsonFromStdin();
+    const err = toolResult?.results?.[0]?.error ?? "";
+    writeJson({ type: "done", content: err ? `文件不存在：${err}` : "文件不存在" });
+    return;
+  }
+
+  if (scenario === "discussion_append") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_append_blocked", name: "append", args: { path: "chapters/chapter_001.txt", content: "world" } },
+      ],
+    });
+    const toolResult = await readJsonFromStdin();
+    const err = toolResult?.results?.[0]?.error ?? "";
+    writeJson({ type: "done", content: err ? `append 失败：${err}` : "append 完成" });
+    return;
+  }
+
+  if (scenario === "continue_append") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_append_blocked", name: "append", args: { path: "chapters/chapter_003.txt", content: "world" } },
+      ],
+    });
+    const toolResult = await readJsonFromStdin();
+    const err = toolResult?.results?.[0]?.error ?? "";
+    writeJson({ type: "done", content: err ? `append 失败：${err}` : "append 完成" });
+    return;
+  }
+
+  writeJson({ type: "done", content: "noop" });
+}
+
+main().catch((err) => {
+  writeJson({ type: "error", message: err instanceof Error ? err.message : String(err) });
+  process.exit(1);
+});
+"#;
+
+    fn ensure_mock_ai_engine_cli() {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+        let path = PATH.get_or_init(|| {
+            let p = std::env::temp_dir().join("creatorai-v2-mock-ai-engine-cli.ts");
+            if let Ok(existing) = fs::read_to_string(&p) {
+                if existing == MOCK_AI_ENGINE_CLI {
+                    return p;
+                }
+            }
+            fs::write(&p, MOCK_AI_ENGINE_CLI).expect("write mock ai-engine cli");
+            p
+        });
+        std::env::set_var("CREATORAI_AI_ENGINE_CLI_PATH", path.to_string_lossy().to_string());
+    }
+
+    fn base_chat_request(project_dir: String, user_content: &str) -> ChatRequest {
+        ensure_mock_ai_engine_cli();
+        ChatRequest {
+            provider: json!({
+              "id": "mock",
+              "name": "Mock Provider",
+              "baseURL": "http://mock/v1",
+              "apiKey": "test",
+              "models": ["test-model"],
+              "providerType": "openai-compatible",
+            }),
+            parameters: json!({
+              "model": "test-model",
+              "temperature": 0,
+              "topP": 1,
+              "maxTokens": 256,
+            }),
+            system_prompt: "test".to_string(),
+            messages: vec![json!({ "role": "user", "content": user_content })],
+            project_dir,
+            mode: SessionMode::Discussion,
+            chapter_id: None,
+            allow_write: false,
+        }
+    }
+
+    #[test]
+    fn discussion_mode_can_read_and_quote_file() {
+        let temp = TempDir::new("creatorai-v2-ai-bridge-discussion-read");
+        fs::create_dir_all(temp.path.join("chapters")).unwrap();
+        fs::write(
+            temp.path.join("chapters/chapter_001.txt"),
+            "第一行：开头要有钩子。\n第二行：铺垫冲突。\n",
+        )
+        .unwrap();
+
+        let mut request = base_chat_request(
+            temp.path.to_string_lossy().to_string(),
+            "__SCENARIO_DISCUSSION_READ__",
+        );
+        request.mode = SessionMode::Discussion;
+
+        let response = run_chat(request).expect("run_chat");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "read");
+        assert!(matches!(response.tool_calls[0].status, ToolCallStatus::Success));
+        assert!(response.content.contains("我读到开头：00001| 第一行：开头要有钩子。"));
+    }
+
+    #[test]
+    fn continue_mode_apply_can_append_and_save_summary() {
+        let temp = TempDir::new("creatorai-v2-ai-bridge-continue-apply");
+        create_min_project(&temp.path);
+
+        let initial = "第三章：旧内容。\n";
+        fs::write(temp.path.join("chapters/chapter_003.txt"), initial).unwrap();
+
+        let index_path = temp.path.join("chapters/index.json");
+        let index = ChapterIndex {
+            chapters: vec![ChapterMeta {
+                id: "chapter_003".to_string(),
+                title: "第三章".to_string(),
+                order: 3,
+                created: 0,
+                updated: 0,
+                word_count: count_words(initial),
+            }],
+            next_id: 4,
+        };
+        let index_json = serde_json::to_string_pretty(&index).unwrap();
+        fs::write(&index_path, format!("{index_json}\n")).unwrap();
+
+        let appended = "主角发现一个秘密。\n";
+        let summary_text = "第三章：主角发现秘密，为后续冲突埋伏笔。";
+
+        let mut request =
+            base_chat_request(temp.path.to_string_lossy().to_string(), "__SCENARIO_CONTINUE_APPLY__");
+        request.mode = SessionMode::Continue;
+        request.chapter_id = Some("chapter_003".to_string());
+        request.allow_write = true;
+
+        let response = run_chat(request).expect("run_chat");
+        assert_eq!(response.tool_calls.len(), 2);
+        assert!(response
+            .tool_calls
+            .iter()
+            .any(|c| c.name == "append" && matches!(c.status, ToolCallStatus::Success)));
+        assert!(response
+            .tool_calls
+            .iter()
+            .any(|c| c.name == "save_summary" && matches!(c.status, ToolCallStatus::Success)));
+
+        let updated_text = fs::read_to_string(temp.path.join("chapters/chapter_003.txt")).unwrap();
+        assert!(updated_text.contains(initial));
+        assert!(updated_text.contains(appended));
+
+        // summaries.json should be created with the saved entry.
+        let summaries = fs::read_to_string(temp.path.join("summaries.json")).unwrap();
+        assert!(summaries.contains("\"chapterId\": \"chapter_003\""));
+        assert!(summaries.contains(summary_text));
+
+        // chapters/index.json should be updated (wordCount + updated timestamp).
+        let updated_index_bytes = fs::read(&index_path).unwrap();
+        let updated_index = serde_json::from_slice::<ChapterIndex>(&updated_index_bytes).unwrap();
+        let meta = updated_index
+            .chapters
+            .iter()
+            .find(|c| c.id == "chapter_003")
+            .unwrap();
+        assert_eq!(meta.word_count, count_words(&updated_text));
+        assert!(meta.updated > 0);
+    }
+
+    #[test]
+    fn tool_errors_are_reported_in_tool_calls_and_user_feedback() {
+        let temp = TempDir::new("creatorai-v2-ai-bridge-tool-error");
+        fs::create_dir_all(temp.path.join("chapters")).unwrap();
+
+        let mut request =
+            base_chat_request(temp.path.to_string_lossy().to_string(), "__SCENARIO_READ_MISSING__");
+        request.mode = SessionMode::Discussion;
+
+        let response = run_chat(request).expect("run_chat");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert!(matches!(response.tool_calls[0].status, ToolCallStatus::Error));
+        assert!(response.tool_calls[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("Failed to open file 'chapters/chapter_010.txt'"));
+        assert!(response.content.contains("文件不存在："));
+    }
+
+    #[test]
+    fn discussion_mode_blocks_append() {
+        let temp = TempDir::new("creatorai-v2-ai-bridge-discussion-blocks-append");
+        fs::create_dir_all(temp.path.join("chapters")).unwrap();
+        fs::write(temp.path.join("chapters/chapter_001.txt"), "hello\n").unwrap();
+
+        let mut request = base_chat_request(
+            temp.path.to_string_lossy().to_string(),
+            "__SCENARIO_DISCUSSION_APPEND__",
+        );
+        request.mode = SessionMode::Discussion;
+        request.allow_write = true;
+
+        let response = run_chat(request).expect("run_chat");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert!(matches!(response.tool_calls[0].status, ToolCallStatus::Error));
+        assert_eq!(
+            response.tool_calls[0].error.as_deref(),
+            Some("Tool not allowed in Discussion mode")
+        );
+        let after = fs::read_to_string(temp.path.join("chapters/chapter_001.txt")).unwrap();
+        assert_eq!(after, "hello\n");
+    }
+
+    #[test]
+    fn continue_mode_blocks_write_tools_before_confirmation() {
+        let temp = TempDir::new("creatorai-v2-ai-bridge-continue-blocks-before-confirm");
+        create_min_project(&temp.path);
+        fs::write(temp.path.join("chapters/chapter_003.txt"), "hello\n").unwrap();
+
+        let mut request = base_chat_request(
+            temp.path.to_string_lossy().to_string(),
+            "__SCENARIO_CONTINUE_APPEND__",
+        );
+        request.mode = SessionMode::Continue;
+        request.chapter_id = Some("chapter_003".to_string());
+        request.allow_write = false;
+
+        let response = run_chat(request).expect("run_chat");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert!(matches!(response.tool_calls[0].status, ToolCallStatus::Error));
+        assert_eq!(
+            response.tool_calls[0].error.as_deref(),
+            Some("Tool not allowed before user confirmation")
+        );
+        let after = fs::read_to_string(temp.path.join("chapters/chapter_003.txt")).unwrap();
+        assert_eq!(after, "hello\n");
     }
 }
