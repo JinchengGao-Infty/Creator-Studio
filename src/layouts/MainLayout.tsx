@@ -85,6 +85,12 @@ export default function MainLayout({
       setCurrentChapterId(detail.chapterId);
     };
 
+    const onOpenSettings = (event: Event) => {
+      const { detail } = event as CustomEvent<{ projectPath: string }>;
+      if (!detail || detail.projectPath !== projectPath) return;
+      setSidebarView("settings");
+    };
+
     const onChaptersChanged = (event: Event) => {
       const { detail } = event as CustomEvent<{ projectPath: string }>;
       if (!detail || detail.projectPath !== projectPath) return;
@@ -98,10 +104,12 @@ export default function MainLayout({
     };
 
     window.addEventListener("creatorai:chapterSelected", onSelected);
+    window.addEventListener("creatorai:openSettings", onOpenSettings);
     window.addEventListener("creatorai:chaptersChanged", onChaptersChanged);
     window.addEventListener("creatorai:saveStatus", onSaveStatus);
     return () => {
       window.removeEventListener("creatorai:chapterSelected", onSelected);
+      window.removeEventListener("creatorai:openSettings", onOpenSettings);
       window.removeEventListener("creatorai:chaptersChanged", onChaptersChanged);
       window.removeEventListener("creatorai:saveStatus", onSaveStatus);
     };

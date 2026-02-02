@@ -6,6 +6,9 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
+  // In some sandboxed/readonly environments, `node_modules` may not be writable.
+  // Put Vite's cache in the project root to keep `npm run build` working.
+  cacheDir: ".vite",
   plugins: [react()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
