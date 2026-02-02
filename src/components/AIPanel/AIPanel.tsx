@@ -4,16 +4,17 @@ import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
 import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
-import CreateSessionModal from "./CreateSessionModal";
-import SessionSelector from "./SessionSelector";
-import { aiChat, type ChatMessage } from "../../lib/ai";
+import SessionList from "./SessionList";
+import { aiChat, DEFAULT_SYSTEM_PROMPT, type ChatMessage } from "../../lib/ai";
+import { buildSystemPrompt, getWritingPresets, saveWritingPresets } from "../../lib/writingPresets";
+import { createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
+import PresetSelector from "./PresetSelector";
+import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
   addSessionMessage,
   createSession,
-  deleteSession,
   getSessionMessages,
   listSessions,
-  renameSession,
   type Session,
   type SessionMode,
 } from "../../lib/sessions";
@@ -30,6 +31,11 @@ function storageCurrentKey(projectPath: string) {
 
 function defaultMode(): SessionMode {
   return "Discussion";
+}
+
+function defaultSessionName(mode: SessionMode, existingCount: number): string {
+  const prefix = mode === "Discussion" ? "讨论" : "续写";
+  return `${prefix} 会话 ${existingCount + 1}`;
 }
 
 function toPanelMessage(msg: { id: string; role: string; content: string; timestamp: number; metadata?: unknown }): PanelMessage {
@@ -56,7 +62,11 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [mode, setMode] = useState<SessionMode>(defaultMode());
   const [messagesInSession, setMessagesInSession] = useState<PanelMessage[]>([]);
-  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [presets, setPresets] = useState<WritingPreset[]>([]);
+  const [activePresetId, setActivePresetId] = useState<string>(createDefaultWritingPreset().id);
+  const [presetSettingsOpen, setPresetSettingsOpen] = useState(false);
+  const [loadingPresets, setLoadingPresets] = useState(false);
+  const [savingPresets, setSavingPresets] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -72,9 +82,44 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      setLoadingPresets(true);
+      try {
+        const result = await getWritingPresets(projectPath);
+        if (cancelled) return;
+        setPresets(result.presets);
+        setActivePresetId(result.activePresetId);
+      } catch (error) {
+        if (cancelled) return;
+        message.error(`加载写作预设失败: ${String(error)}`);
+        const fallback = createDefaultWritingPreset();
+        setPresets([fallback]);
+        setActivePresetId(fallback.id);
+      } finally {
+        if (!cancelled) setLoadingPresets(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
       setLoadingSessions(true);
       try {
         let next = await listSessions(projectPath);
+
+        if (!next.length) {
+          const created = await createSession({
+            projectPath,
+            name: defaultSessionName(defaultMode(), 0),
+            mode: defaultMode(),
+          });
+          next = [created];
+        }
 
         if (cancelled) return;
 
@@ -87,7 +132,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
         setCurrentSessionId(selectedId);
         if (selectedId) localStorage.setItem(currentKey, selectedId);
-        else localStorage.removeItem(currentKey);
 
         const selected = next.find((s) => s.id === selectedId);
         setMode(selected?.mode ?? defaultMode());
@@ -216,46 +260,46 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   }, [projectPath, currentSessionId]);
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null;
-  const busy = loading || loadingSessions || loadingMessages;
+  const busy = loading || loadingSessions || loadingMessages || savingPresets;
 
-  const selectSession = (id: string | null, nextSessions: Session[] = sessions) => {
+  const activePreset = useMemo(() => {
+    if (!presets.length) return createDefaultWritingPreset();
+    return (
+      presets.find((p) => p.id === activePresetId) ??
+      presets.find((p) => p.isDefault) ??
+      presets[0] ??
+      createDefaultWritingPreset()
+    );
+  }, [presets, activePresetId]);
+
+  const selectSession = (id: string | null) => {
     setCurrentSessionId(id);
     if (id) localStorage.setItem(currentKey, id);
-    else localStorage.removeItem(currentKey);
-
-    const selected = id ? nextSessions.find((s) => s.id === id) : null;
-    if (selected) setMode(selected.mode);
   };
 
-  const refreshSessions = async () => {
-    const next = await listSessions(projectPath);
-    setSessions(next);
+  const handleCreateSession = () => {
+    if (loadingSessions) return;
+    const existing = sessions.filter((s) => s.mode === mode).length;
+    const name = defaultSessionName(mode, existing);
 
-    const stillValid = currentSessionId && next.some((s) => s.id === currentSessionId);
-    const nextId = stillValid ? currentSessionId : next[0]?.id ?? null;
-    selectSession(nextId, next);
-  };
-
-  const handleCreateSession = async (name: string, sessionMode: SessionMode) => {
     setLoadingSessions(true);
-    try {
-      const created = await createSession({ projectPath, name, mode: sessionMode });
-      setSessions((prev) => {
-        const next = [created, ...prev.filter((s) => s.id !== created.id)];
-        next.sort((a, b) => b.updated_at - a.updated_at);
-        return next;
+    void createSession({ projectPath, name, mode })
+      .then((created) => {
+        setSessions((prev) => [created, ...prev]);
+        selectSession(created.id);
+      })
+      .catch((error) => {
+        message.error(`创建会话失败: ${String(error)}`);
+      })
+      .finally(() => {
+        setLoadingSessions(false);
       });
-      selectSession(created.id, [created, ...sessions]);
-    } catch (error) {
-      message.error(`创建会话失败: ${String(error)}`);
-      throw error;
-    } finally {
-      setLoadingSessions(false);
-    }
   };
 
   const handleSelectSession = (id: string) => {
     if (!sessions.some((s) => s.id === id)) return;
+    const selected = sessions.find((s) => s.id === id);
+    if (selected) setMode(selected.mode);
     selectSession(id);
   };
 
@@ -263,47 +307,27 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     if (nextMode === mode) return;
     setMode(nextMode);
 
-    const nextId = sessions.find((s) => s.mode === nextMode)?.id ?? null;
-    selectSession(nextId);
-  };
-
-  const handleRenameSession = async (sessionId: string, newName: string) => {
-    const trimmed = newName.trim();
-    if (!trimmed) {
-      message.error("会话名称不能为空");
-      throw new Error("Session name cannot be empty");
+    const nextSessions = sessions.filter((s) => s.mode === nextMode);
+    if (nextSessions.length) {
+      selectSession(nextSessions[0]?.id ?? null);
+      return;
     }
 
+    selectSession(null);
+    const name = defaultSessionName(nextMode, 0);
     setLoadingSessions(true);
-    try {
-      await renameSession({ projectPath, sessionId, newName: trimmed });
-      await refreshSessions();
-    } catch (error) {
-      message.error(`重命名会话失败: ${String(error)}`);
-      throw error;
-    } finally {
-      setLoadingSessions(false);
-    }
+    void createSession({ projectPath, name, mode: nextMode })
+      .then((created) => {
+        setSessions((prev) => [created, ...prev]);
+        selectSession(created.id);
+      })
+      .catch((error) => {
+        message.error(`创建会话失败: ${String(error)}`);
+      })
+      .finally(() => {
+        setLoadingSessions(false);
+      });
   };
-
-  const handleDeleteSession = async (sessionId: string) => {
-    setLoadingSessions(true);
-    try {
-      await deleteSession({ projectPath, sessionId });
-      await refreshSessions();
-    } catch (error) {
-      message.error(`删除会话失败: ${String(error)}`);
-      throw error;
-    } finally {
-      setLoadingSessions(false);
-    }
-  };
-
-  const sortedSessions = useMemo(() => {
-    const next = sessions.slice();
-    next.sort((a, b) => b.updated_at - a.updated_at);
-    return next;
-  }, [sessions]);
 
   const handleSend = async (content: string) => {
     if (!currentSession || busy) return;
@@ -332,9 +356,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         .slice(-20)
         .map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
 
+      const systemPrompt =
+        mode === "Continue" ? buildSystemPrompt(activePreset, DEFAULT_SYSTEM_PROMPT) : DEFAULT_SYSTEM_PROMPT;
+
       const reply = await aiChat({
         projectDir: projectPath,
         messages: messagesForAi,
+        systemPrompt,
       });
 
       const streamPromise = realStreamingRef.current
@@ -376,6 +404,34 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     }
   };
 
+  const handleSelectPreset = (presetId: string) => {
+    if (!presetId || presetId === activePresetId) return;
+    const previous = activePresetId;
+    setActivePresetId(presetId);
+
+    setSavingPresets(true);
+    void saveWritingPresets({ projectPath, presets, activePresetId: presetId })
+      .catch((error) => {
+        message.error(`保存当前预设失败: ${String(error)}`);
+        setActivePresetId(previous);
+      })
+      .finally(() => {
+        setSavingPresets(false);
+      });
+  };
+
+  const handleSavePresets = async (nextPresets: WritingPreset[], nextActiveId: string) => {
+    setSavingPresets(true);
+    try {
+      await saveWritingPresets({ projectPath, presets: nextPresets, activePresetId: nextActiveId });
+      setPresets(nextPresets);
+      setActivePresetId(nextActiveId);
+      message.success("写作预设已保存");
+    } finally {
+      setSavingPresets(false);
+    }
+  };
+
   return (
     <div className="ai-panel-root">
       <div className="ai-panel-header">
@@ -385,7 +441,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
             <Button
               size="small"
               icon={<PlusOutlined />}
-              onClick={() => setCreateModalOpen(true)}
+              onClick={handleCreateSession}
               disabled={busy}
             />
             <Button
@@ -410,18 +466,35 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           />
         </div>
 
+        {mode === "Continue" ? (
+          <PresetSelector
+            presets={presets.length ? presets : [createDefaultWritingPreset()]}
+            activePresetId={activePresetId}
+            onSelect={handleSelectPreset}
+            onOpenSettings={() => setPresetSettingsOpen(true)}
+            disabled={busy || loadingPresets}
+          />
+        ) : null}
+
         <div className="ai-panel-session">
-          <SessionSelector
-            sessions={sortedSessions}
+          <SessionList
+            sessions={sessions
+              .filter((s) => s.mode === mode)
+              .map((s) => ({ id: s.id, name: s.name }))}
             currentSessionId={currentSessionId}
             onSelect={handleSelectSession}
-            onOpenCreate={() => setCreateModalOpen(true)}
-            onRename={handleRenameSession}
-            onDelete={handleDeleteSession}
             disabled={busy}
           />
         </div>
       </div>
+
+      <PresetSettingsDrawer
+        open={presetSettingsOpen}
+        onClose={() => setPresetSettingsOpen(false)}
+        presets={presets.length ? presets : [createDefaultWritingPreset()]}
+        activePresetId={activePresetId}
+        onSave={handleSavePresets}
+      />
 
       {configMissing ? (
         <div className="ai-panel-warning">
@@ -443,14 +516,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       />
 
       <ChatInput onSend={handleSend} disabled={busy || !currentSession} />
-
-      <CreateSessionModal
-        open={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onCreate={handleCreateSession}
-        defaultMode={mode}
-        confirmLoading={loadingSessions}
-      />
     </div>
   );
 }
