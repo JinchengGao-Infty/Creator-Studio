@@ -1,0 +1,2 @@
+{"ts": 1770016052, "sha": "cbbbfd5798ce019eb81bc4c2f5515f96624229d7", "agent": "", "task": "", "files": "M\tCHECKLIST.md"}
+{"ts": 1770016147, "sha": "ccc67a0ce260b8e1b84e8379a1e4cf8e5dcd5f8f", "agent": "", "task": "", "files": "M\tsrc-tauri/src/ai_bridge.rs;M\tsrc-tauri/src/file_ops/read.rs;M\tsrc-tauri/src/file_ops/search.rs;M\tsrc-tauri/src/lib.rs;M\tsrc-tauri/src/session.rs;M\tsrc/components/AIPanel/AIPanel.tsx;M\tsrc/lib/ai.ts;M\tsrc/lib/sessions.ts"}
