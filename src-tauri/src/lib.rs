@@ -8,6 +8,7 @@ mod keyring_store;
 mod project;
 mod recent_projects;
 mod security;
+mod session;
 
 use chapter::{
     create_chapter, delete_chapter, get_chapter_content, list_chapters, rename_chapter,
@@ -21,6 +22,10 @@ use file_ops::{
 use import::{import_txt, preview_import_txt};
 use project::{create_project, get_project_info, open_project, save_project_config};
 use recent_projects::{add_recent_project, get_recent_projects};
+use session::{
+    add_message, create_session, delete_session, get_session_messages, list_sessions,
+    rename_session,
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
@@ -274,6 +279,12 @@ pub fn run() {
             rename_chapter,
             delete_chapter,
             reorder_chapters,
+            list_sessions,
+            create_session,
+            rename_session,
+            delete_session,
+            get_session_messages,
+            add_message,
             preview_import_txt,
             import_txt
         ])
@@ -485,5 +496,122 @@ mod tests {
         assert_eq!(chapters2.len(), 1);
         assert_eq!(chapters2[0].id, "chapter_001");
         assert_eq!(chapters2[0].order, 1);
+    }
+
+    #[test]
+    fn session_storage_smoke_test() {
+        use uuid::Uuid;
+
+        let temp = TempDir::new("creatorai-v2-session");
+        let project_root = temp.path.join("MyNovel");
+        let project_path = project_root.to_string_lossy().to_string();
+
+        tauri::async_runtime::block_on(create_project(
+            project_path.clone(),
+            "我的小说".to_string(),
+        ))
+        .expect("create_project");
+
+        let sessions = tauri::async_runtime::block_on(list_sessions(project_path.clone()))
+            .expect("list_sessions");
+        assert!(sessions.is_empty());
+
+        let s1 = tauri::async_runtime::block_on(create_session(
+            project_path.clone(),
+            "讨论：角色设定".to_string(),
+            session::SessionMode::Discussion,
+            None,
+        ))
+        .expect("create_session discussion");
+        Uuid::parse_str(&s1.id).expect("session id is uuid");
+
+        let msg1 = tauri::async_runtime::block_on(add_message(
+            project_path.clone(),
+            s1.id.clone(),
+            session::MessageRole::User,
+            "帮我设计一个反派角色".to_string(),
+            None,
+        ))
+        .expect("add_message");
+        Uuid::parse_str(&msg1.id).expect("message id is uuid");
+
+        let messages = tauri::async_runtime::block_on(get_session_messages(
+            project_path.clone(),
+            s1.id.clone(),
+        ))
+        .expect("get_session_messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "帮我设计一个反派角色");
+
+        tauri::async_runtime::block_on(rename_session(
+            project_path.clone(),
+            s1.id.clone(),
+            "讨论：人物关系".to_string(),
+        ))
+        .expect("rename_session");
+
+        let sessions2 = tauri::async_runtime::block_on(list_sessions(project_path.clone()))
+            .expect("list_sessions after rename");
+        let renamed = sessions2
+            .iter()
+            .find(|s| s.id == s1.id)
+            .expect("renamed session exists");
+        assert_eq!(renamed.name, "讨论：人物关系");
+
+        let ch1 = tauri::async_runtime::block_on(create_chapter(
+            project_path.clone(),
+            "第一章".to_string(),
+        ))
+        .expect("create_chapter");
+
+        let s2 = tauri::async_runtime::block_on(create_session(
+            project_path.clone(),
+            "续写：第一章".to_string(),
+            session::SessionMode::Continue,
+            Some(ch1.id.clone()),
+        ))
+        .expect("create_session continue");
+
+        let meta = session::MessageMetadata {
+            summary: Some("本次生成了开场冲突".to_string()),
+            word_count: Some(120),
+            applied: Some(false),
+        };
+        tauri::async_runtime::block_on(add_message(
+            project_path.clone(),
+            s2.id.clone(),
+            session::MessageRole::Assistant,
+            "这里是续写内容预览...".to_string(),
+            Some(meta.clone()),
+        ))
+        .expect("add_message with metadata");
+
+        let messages2 = tauri::async_runtime::block_on(get_session_messages(
+            project_path.clone(),
+            s2.id.clone(),
+        ))
+        .expect("get_session_messages continue");
+        assert_eq!(messages2.len(), 1);
+        assert_eq!(messages2[0].metadata, Some(meta));
+
+        tauri::async_runtime::block_on(delete_session(project_path.clone(), s1.id.clone()))
+            .expect("delete_session");
+
+        let sessions3 = tauri::async_runtime::block_on(list_sessions(project_path.clone()))
+            .expect("list_sessions after delete");
+        assert_eq!(sessions3.len(), 1);
+        assert_eq!(sessions3[0].id, s2.id);
+
+        assert!(
+            !project_root
+                .join("sessions")
+                .join(format!("{}.json", s1.id))
+                .exists(),
+            "deleted session file should not exist"
+        );
+        assert!(
+            project_root.join("sessions").join("index.json").exists(),
+            "sessions/index.json should exist"
+        );
     }
 }
