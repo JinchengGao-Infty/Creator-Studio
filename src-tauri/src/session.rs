@@ -48,6 +48,13 @@ pub struct MessageMetadata {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageMetadataUpdate {
+    pub summary: Option<String>,
+    pub word_count: Option<u32>,
+    pub applied: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStatus {
@@ -444,6 +451,72 @@ fn add_message_sync(
     Ok(msg)
 }
 
+fn update_message_metadata_sync(
+    project_path: String,
+    session_id: String,
+    message_id: String,
+    update: MessageMetadataUpdate,
+) -> Result<Message, String> {
+    let _guard = fs_lock()
+        .lock()
+        .map_err(|_| "Failed to lock sessions storage".to_string())?;
+
+    let project_root = PathBuf::from(project_path);
+    ensure_project_exists(&project_root)?;
+
+    let id = normalize_session_id(&session_id)?;
+    let mut index = read_sessions_index(&project_root)?;
+    let old_index_content = serialize_json_pretty(&index)?;
+
+    let Some(pos) = index.sessions.iter().position(|s| s.id == id) else {
+        return Err("Session not found".to_string());
+    };
+
+    let mut file = read_session_file(&project_root, &id)?;
+    let old_file_content = serialize_json_pretty(&file)?;
+
+    let updated_message = {
+        let Some(msg) = file.messages.iter_mut().find(|m| m.id == message_id) else {
+            return Err("Message not found".to_string());
+        };
+
+        let mut metadata = msg.metadata.clone().unwrap_or(MessageMetadata {
+            summary: None,
+            word_count: None,
+            applied: None,
+            tool_calls: None,
+        });
+
+        if update.summary.is_some() {
+            metadata.summary = update.summary;
+        }
+        if update.word_count.is_some() {
+            metadata.word_count = update.word_count;
+        }
+        if update.applied.is_some() {
+            metadata.applied = update.applied;
+        }
+
+        msg.metadata = Some(metadata);
+        msg.clone()
+    };
+
+    let now = now_unix_seconds()?;
+    file.session.updated_at = now;
+    index.sessions[pos].updated_at = now;
+
+    write_session_file(&project_root, &id, &file)?;
+    if let Err(e) = write_sessions_index(&project_root, &index) {
+        let index_path = sessions_index_path(&project_root)?;
+        let _ = fs::write(&index_path, old_index_content);
+        let session_path = session_file_path(&project_root, &id)?;
+        let _ = fs::write(&session_path, old_file_content);
+        return Err(e);
+    }
+
+    Ok(updated_message)
+}
+
 #[tauri::command]
 pub async fn list_sessions(project_path: String) -> Result<Vec<Session>, String> {
     tauri::async_runtime::spawn_blocking(move || list_sessions_sync(project_path))
@@ -507,6 +580,20 @@ pub async fn add_message(
 ) -> Result<Message, String> {
     tauri::async_runtime::spawn_blocking(move || {
         add_message_sync(project_path, session_id, role, content, metadata)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn update_message_metadata(
+    project_path: String,
+    session_id: String,
+    message_id: String,
+    metadata: MessageMetadataUpdate,
+) -> Result<Message, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        update_message_metadata_sync(project_path, session_id, message_id, metadata)
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))?

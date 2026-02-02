@@ -140,6 +140,10 @@ fn create_project_sync(path: String, name: String) -> Result<ProjectConfig, Stri
     if idx_path.exists() {
         return Err("Project already exists (chapters/index.json already present)".to_string());
     }
+    let summaries_path = project_root.join("summaries.json");
+    if summaries_path.exists() {
+        return Err("Project already exists (summaries.json already present)".to_string());
+    }
 
     let now = now_unix_seconds()?;
     let config = ProjectConfig {
@@ -160,6 +164,8 @@ fn create_project_sync(path: String, name: String) -> Result<ProjectConfig, Stri
 
     write_json_pretty_create_new(&cfg_path, &config)?;
     write_json_pretty_create_new(&idx_path, &index)?;
+    fs::write(&summaries_path, "[]\n")
+        .map_err(|e| format!("Failed to write '{}': {e}", summaries_path.display()))?;
 
     Ok(config)
 }
@@ -172,6 +178,10 @@ fn open_project_sync(path: String) -> Result<ProjectConfig, String> {
     }
 
     validate_project_structure(&project_root)?;
+    let summaries_path = project_root.join("summaries.json");
+    if !summaries_path.exists() {
+        let _ = fs::write(&summaries_path, "[]\n");
+    }
     read_project_config(&project_root)
 }
 

@@ -9,6 +9,7 @@ const TOOL_ICON_MAP: Record<string, string> = {
   append: "➕",
   list: "📁",
   search: "🔍",
+  get_chapter_info: "ℹ️",
   save_summary: "💾",
 };
 
@@ -75,6 +76,20 @@ function summarizeToolCall(call: ToolCall): string {
       return path ? `path: ${path} · 已写入` : "已写入";
     case "save_summary":
       return "已保存";
+    case "get_chapter_info": {
+      const data = call.result ? safeJsonParse(call.result) : null;
+      const title = (data as { title?: unknown } | null)?.title;
+      const wordCount = (data as { wordCount?: unknown; word_count?: unknown } | null)?.wordCount;
+      const wc =
+        typeof wordCount === "number"
+          ? wordCount
+          : typeof (data as { word_count?: unknown } | null)?.word_count === "number"
+            ? ((data as { word_count?: number }).word_count as number)
+            : null;
+      const label = typeof title === "string" && title.trim() ? title.trim() : "章节信息";
+      const suffix = typeof wc === "number" ? ` · ${wc.toLocaleString()} 字` : "";
+      return `${label}${suffix}`;
+    }
     default:
       return path ? `path: ${path}` : "";
   }
@@ -139,4 +154,3 @@ export default function ToolCallDisplay({ toolCall }: { toolCall: ToolCall }) {
     </div>
   );
 }
-

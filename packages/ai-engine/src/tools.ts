@@ -65,6 +65,27 @@ export const tools: ToolDefinition[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'get_chapter_info',
+    description: '获取当前章节信息（路径、字数等）。',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'save_summary',
+    description: '保存本次续写的摘要（用于 summaries.json）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        chapterId: { type: 'string', description: '章节 ID（例如 chapter_003 或 003）' },
+        summary: { type: 'string', description: '摘要内容（50-100 字左右）' },
+      },
+      required: ['chapterId', 'summary'],
+    },
+  },
 ]
 
 type ExecuteTools = (calls: ToolCallRequest[]) => Promise<ToolCallResult[]>
@@ -128,6 +149,16 @@ export function getToolsForSDK(executeTools?: ExecuteTools) {
       description: getToolDef('search').description,
       parameters: jsonSchema(getToolDef('search').parameters as any),
       execute: executeTools ? makeExecute('search') : undefined,
+    }),
+    get_chapter_info: tool({
+      description: getToolDef('get_chapter_info').description,
+      parameters: jsonSchema(getToolDef('get_chapter_info').parameters as any),
+      execute: executeTools ? makeExecute('get_chapter_info') : undefined,
+    }),
+    save_summary: tool({
+      description: getToolDef('save_summary').description,
+      parameters: jsonSchema(getToolDef('save_summary').parameters as any),
+      execute: executeTools ? makeExecute('save_summary') : undefined,
     }),
   }
 }
