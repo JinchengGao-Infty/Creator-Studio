@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ConfigProvider, message, theme as antdTheme } from "antd";
 import { CreateProjectModal, type RecentProject, WelcomePage } from "./components/Project";
 import { useTheme } from "./hooks/useTheme";
@@ -35,6 +36,7 @@ export default function App() {
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [createProjectModalOpen, setCreateProjectModalOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const loadRecentProjects = async () => {
     try {
@@ -71,14 +73,66 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const onSaveStatus = (event: Event) => {
+      if (!currentProject) return;
+      const { detail } = event as CustomEvent<{ projectPath: string; saveStatus: string }>;
+      if (!detail || detail.projectPath !== currentProject.path) return;
+      setHasUnsavedChanges(detail.saveStatus !== "saved");
+    };
+
+    window.addEventListener("creatorai:saveStatus", onSaveStatus);
+    return () => window.removeEventListener("creatorai:saveStatus", onSaveStatus);
+  }, [currentProject]);
+
+  useEffect(() => {
+    if (!currentProject) return;
+    if (!isTauri()) return;
+
+    let unlisten: (() => void) | null = null;
+    const setup = async () => {
+      try {
+        unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+          if (!hasUnsavedChanges) return;
+          const confirmed = await confirm("你有未保存的更改，确定要退出吗？", {
+            title: "确认退出",
+            kind: "warning",
+          });
+          if (!confirmed) event.preventDefault();
+        });
+      } catch {
+        // ignore
+      }
+    };
+
+    void setup();
+    return () => {
+      unlisten?.();
+    };
+  }, [currentProject, hasUnsavedChanges]);
+
+  const confirmDiscardUnsaved = async (actionText: string) => {
+    if (!hasUnsavedChanges) return true;
+    if (isTauri()) {
+      return confirm(`当前章节有未保存的更改，${actionText}将丢失这些更改。是否继续？`, {
+        title: "未保存更改",
+        kind: "warning",
+      });
+    }
+    return window.confirm(`当前章节有未保存的更改，${actionText}将丢失这些更改。是否继续？`);
+  };
+
   const openProject = async (path: string) => {
     if (!path.trim()) return;
+
+    if (currentProject && !(await confirmDiscardUnsaved("打开其他项目"))) return;
 
     setProjectBusy(true);
     message.loading({ content: "正在打开项目...", key: "project" });
     try {
       const config = (await invoke("open_project", { path })) as ProjectConfig;
       setCurrentProject({ path, config });
+      setHasUnsavedChanges(false);
       await invoke("add_recent_project", { name: config.name, path });
       await loadRecentProjects();
       message.success({ content: `已打开项目：${config.name}`, key: "project" });
@@ -109,6 +163,8 @@ export default function App() {
     const trimmedParent = parentPath.trim();
     if (!trimmedName || !trimmedParent) return;
 
+    if (currentProject && !(await confirmDiscardUnsaved("新建项目"))) return;
+
     const folderName = trimmedName.replace(/[\\/]/g, "-");
     const projectPath = joinPath(trimmedParent, folderName);
 
@@ -120,6 +176,7 @@ export default function App() {
         name: trimmedName,
       })) as ProjectConfig;
       setCurrentProject({ path: projectPath, config });
+      setHasUnsavedChanges(false);
       await invoke("add_recent_project", { name: config.name, path: projectPath });
       await loadRecentProjects();
       setCreateProjectModalOpen(false);
@@ -132,7 +189,11 @@ export default function App() {
   };
 
   const closeProject = () => {
-    setCurrentProject(null);
+    void (async () => {
+      if (!(await confirmDiscardUnsaved("关闭项目"))) return;
+      setCurrentProject(null);
+      setHasUnsavedChanges(false);
+    })();
   };
 
   const antdThemeConfig = useMemo(() => {

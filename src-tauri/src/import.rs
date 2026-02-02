@@ -100,7 +100,7 @@ fn preview_import_txt_sync(file_path: String, pattern: String) -> Result<Vec<Cha
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn preview_import_txt(file_path: String, pattern: String) -> Result<Vec<ChapterPreview>, String> {
     tauri::async_runtime::spawn_blocking(move || preview_import_txt_sync(file_path, pattern))
         .await
@@ -114,7 +114,7 @@ fn parse_import_txt_sync(file_path: String, pattern: String) -> Result<Vec<Chapt
     parse_chapters_from_text(&content, &pattern)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn import_txt(
     window: tauri::Window,
     project_path: String,

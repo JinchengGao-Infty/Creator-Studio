@@ -6,8 +6,13 @@ import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
 import SessionList from "./SessionList";
-import { aiChat, type ChatMessage } from "../../lib/ai";
-import { formatWritingPreset, getWritingPresets, saveWritingPresets } from "../../lib/writingPresets";
+import { aiChat, getSystemPromptForMode, type ChatMessage } from "../../lib/ai";
+import {
+  buildSystemPrompt,
+  formatWritingPreset,
+  getWritingPresets,
+  saveWritingPresets,
+} from "../../lib/writingPresets";
 import { createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
 import PresetSelector from "./PresetSelector";
 import PresetSettingsDrawer from "./PresetSettingsDrawer";
@@ -188,7 +193,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     setCurrentChapterId(stored && stored.trim() ? stored : null);
 
     const onSelected = (event: Event) => {
-      const { detail } = event as CustomEvent<{ projectPath: string; chapterId: string }>;
+      const { detail } = event as CustomEvent<{ projectPath: string; chapterId: string | null }>;
       if (!detail || detail.projectPath !== projectPath) return;
       setCurrentChapterId(detail.chapterId);
     };
@@ -208,7 +213,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     let cancelled = false;
     const loadTitle = async () => {
       try {
-        const list = (await invoke("list_chapters", { project_path: projectPath })) as Array<
+        const list = (await invoke("list_chapters", { projectPath })) as Array<
           { id: string; title: string }
         >;
         if (cancelled) return;
@@ -597,7 +602,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
               writingPreset: formatWritingPreset(activePreset),
               phase: continuePhase,
             })
-          : undefined;
+          : buildSystemPrompt(activePreset, getSystemPromptForMode(mode, projectPath));
 
       const { content: reply, toolCalls } = await aiChat({
         projectDir: projectPath,
@@ -651,7 +656,9 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
       const appended = toolCalls.some((c) => c.name === "append" && c.status === "success");
       if (mode === "Continue" && appended) {
-        window.dispatchEvent(new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }));
+        window.dispatchEvent(
+          new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "append" } }),
+        );
       }
 
       if (mode === "Continue" && allowWrite && typeof sourceDraftMessageId === "string" && appended) {

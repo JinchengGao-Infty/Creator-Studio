@@ -682,14 +682,14 @@ fn compact_session_sync(project_path: String, session_id: String, keep_recent: u
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn list_sessions(project_path: String) -> Result<Vec<Session>, String> {
     tauri::async_runtime::spawn_blocking(move || list_sessions_sync(project_path))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn create_session(
     project_path: String,
     name: String,
@@ -703,7 +703,7 @@ pub async fn create_session(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn rename_session(
     project_path: String,
     session_id: String,
@@ -716,14 +716,14 @@ pub async fn rename_session(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn delete_session(project_path: String, session_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || delete_session_sync(project_path, session_id))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn get_session_messages(
     project_path: String,
     session_id: String,
@@ -735,7 +735,7 @@ pub async fn get_session_messages(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn add_message(
     project_path: String,
     session_id: String,
@@ -750,7 +750,7 @@ pub async fn add_message(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn update_message_metadata(
     project_path: String,
     session_id: String,
@@ -764,7 +764,7 @@ pub async fn update_message_metadata(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn compact_session(
     project_path: String,
     session_id: String,

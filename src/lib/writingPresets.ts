@@ -13,18 +13,26 @@ export interface WritingPresetsState {
 interface GetPresetsResponse {
   presets: WritingPreset[];
   active_preset_id: string;
+  activePresetId: string;
 }
 
 export async function getWritingPresets(projectPath: string): Promise<WritingPresetsState> {
   const fallback = createDefaultWritingPreset();
 
   const result = (await invoke("get_presets", {
-    project_path: projectPath,
+    projectPath,
   })) as Partial<GetPresetsResponse> | null;
 
-  const presets = Array.isArray(result?.presets) && result?.presets.length ? result.presets : [fallback];
-  const activePresetId = typeof result?.active_preset_id === "string" && result.active_preset_id.trim()
-    ? result.active_preset_id
+  const presets =
+    Array.isArray(result?.presets) && result?.presets.length ? result.presets : [fallback];
+  const rawActiveId =
+    typeof result?.active_preset_id === "string"
+      ? result.active_preset_id
+      : typeof result?.activePresetId === "string"
+        ? result.activePresetId
+        : "";
+  const activePresetId = rawActiveId.trim()
+    ? rawActiveId
     : presets.find((p) => p.isDefault)?.id ?? presets[0]?.id ?? DEFAULT_PRESET_ID;
 
   return { presets, activePresetId };
@@ -36,9 +44,9 @@ export async function saveWritingPresets(params: {
   activePresetId: string;
 }): Promise<void> {
   await invoke("save_presets", {
-    project_path: params.projectPath,
+    projectPath: params.projectPath,
     presets: params.presets,
-    active_preset_id: params.activePresetId,
+    activePresetId: params.activePresetId,
   });
 }
 

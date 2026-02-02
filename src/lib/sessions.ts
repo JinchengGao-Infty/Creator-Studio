@@ -29,7 +29,7 @@ export interface SessionMessage {
 }
 
 export async function listSessions(projectPath: string): Promise<Session[]> {
-  return (await invoke("list_sessions", { project_path: projectPath })) as Session[];
+  return (await invoke("list_sessions", { projectPath })) as Session[];
 }
 
 export async function createSession(params: {
@@ -39,10 +39,10 @@ export async function createSession(params: {
   chapterId?: string | null;
 }): Promise<Session> {
   return (await invoke("create_session", {
-    project_path: params.projectPath,
+    projectPath: params.projectPath,
     name: params.name,
     mode: params.mode,
-    chapter_id: params.chapterId ?? null,
+    chapterId: params.chapterId ?? null,
   })) as Session;
 }
 
@@ -51,8 +51,8 @@ export async function getSessionMessages(params: {
   sessionId: string;
 }): Promise<SessionMessage[]> {
   return (await invoke("get_session_messages", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
   })) as SessionMessage[];
 }
 
@@ -64,8 +64,8 @@ export async function addSessionMessage(params: {
   metadata?: MessageMetadata | null;
 }): Promise<SessionMessage> {
   return (await invoke("add_message", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
     role: params.role,
     content: params.content,
     metadata: params.metadata ?? null,
@@ -81,9 +81,9 @@ export async function updateMessageMetadata(params: {
   applied?: boolean;
 }): Promise<SessionMessage> {
   return (await invoke("update_message_metadata", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
-    message_id: params.messageId,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
+    messageId: params.messageId,
     metadata: {
       summary: params.summary,
       word_count: params.wordCount,
@@ -98,9 +98,9 @@ export async function renameSession(params: {
   newName: string;
 }): Promise<void> {
   await invoke("rename_session", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
-    new_name: params.newName,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
+    newName: params.newName,
   });
 }
 
@@ -109,8 +109,8 @@ export async function deleteSession(params: {
   sessionId: string;
 }): Promise<void> {
   await invoke("delete_session", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
   });
 }
 
@@ -120,8 +120,8 @@ export async function compactSession(params: {
   keepRecent: number;
 }): Promise<void> {
   await invoke("compact_session", {
-    project_path: params.projectPath,
-    session_id: params.sessionId,
-    keep_recent: params.keepRecent,
+    projectPath: params.projectPath,
+    sessionId: params.sessionId,
+    keepRecent: params.keepRecent,
   });
 }

@@ -222,14 +222,14 @@ fn save_presets_sync(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn get_presets(project_path: String) -> Result<PresetsPayload, String> {
     tauri::async_runtime::spawn_blocking(move || get_presets_sync(project_path))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn save_presets(
     project_path: String,
     presets: Vec<WritingPreset>,
