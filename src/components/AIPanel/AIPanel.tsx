@@ -4,13 +4,16 @@ import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
 import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
-import SessionList from "./SessionList";
+import CreateSessionModal from "./CreateSessionModal";
+import SessionSelector from "./SessionSelector";
 import { aiChat, type ChatMessage } from "../../lib/ai";
 import {
   addSessionMessage,
   createSession,
+  deleteSession,
   getSessionMessages,
   listSessions,
+  renameSession,
   type Session,
   type SessionMode,
 } from "../../lib/sessions";
@@ -27,11 +30,6 @@ function storageCurrentKey(projectPath: string) {
 
 function defaultMode(): SessionMode {
   return "Discussion";
-}
-
-function defaultSessionName(mode: SessionMode, existingCount: number): string {
-  const prefix = mode === "Discussion" ? "讨论" : "续写";
-  return `${prefix} 会话 ${existingCount + 1}`;
 }
 
 function toPanelMessage(msg: { id: string; role: string; content: string; timestamp: number; metadata?: unknown }): PanelMessage {
@@ -58,6 +56,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [mode, setMode] = useState<SessionMode>(defaultMode());
   const [messagesInSession, setMessagesInSession] = useState<PanelMessage[]>([]);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -77,15 +76,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       try {
         let next = await listSessions(projectPath);
 
-        if (!next.length) {
-          const created = await createSession({
-            projectPath,
-            name: defaultSessionName(defaultMode(), 0),
-            mode: defaultMode(),
-          });
-          next = [created];
-        }
-
         if (cancelled) return;
 
         setSessions(next);
@@ -97,6 +87,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
         setCurrentSessionId(selectedId);
         if (selectedId) localStorage.setItem(currentKey, selectedId);
+        else localStorage.removeItem(currentKey);
 
         const selected = next.find((s) => s.id === selectedId);
         setMode(selected?.mode ?? defaultMode());
@@ -227,34 +218,44 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const currentSession = sessions.find((s) => s.id === currentSessionId) ?? null;
   const busy = loading || loadingSessions || loadingMessages;
 
-  const selectSession = (id: string | null) => {
+  const selectSession = (id: string | null, nextSessions: Session[] = sessions) => {
     setCurrentSessionId(id);
     if (id) localStorage.setItem(currentKey, id);
+    else localStorage.removeItem(currentKey);
+
+    const selected = id ? nextSessions.find((s) => s.id === id) : null;
+    if (selected) setMode(selected.mode);
   };
 
-  const handleCreateSession = () => {
-    if (loadingSessions) return;
-    const existing = sessions.filter((s) => s.mode === mode).length;
-    const name = defaultSessionName(mode, existing);
+  const refreshSessions = async () => {
+    const next = await listSessions(projectPath);
+    setSessions(next);
 
+    const stillValid = currentSessionId && next.some((s) => s.id === currentSessionId);
+    const nextId = stillValid ? currentSessionId : next[0]?.id ?? null;
+    selectSession(nextId, next);
+  };
+
+  const handleCreateSession = async (name: string, sessionMode: SessionMode) => {
     setLoadingSessions(true);
-    void createSession({ projectPath, name, mode })
-      .then((created) => {
-        setSessions((prev) => [created, ...prev]);
-        selectSession(created.id);
-      })
-      .catch((error) => {
-        message.error(`创建会话失败: ${String(error)}`);
-      })
-      .finally(() => {
-        setLoadingSessions(false);
+    try {
+      const created = await createSession({ projectPath, name, mode: sessionMode });
+      setSessions((prev) => {
+        const next = [created, ...prev.filter((s) => s.id !== created.id)];
+        next.sort((a, b) => b.updated_at - a.updated_at);
+        return next;
       });
+      selectSession(created.id, [created, ...sessions]);
+    } catch (error) {
+      message.error(`创建会话失败: ${String(error)}`);
+      throw error;
+    } finally {
+      setLoadingSessions(false);
+    }
   };
 
   const handleSelectSession = (id: string) => {
     if (!sessions.some((s) => s.id === id)) return;
-    const selected = sessions.find((s) => s.id === id);
-    if (selected) setMode(selected.mode);
     selectSession(id);
   };
 
@@ -262,27 +263,47 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     if (nextMode === mode) return;
     setMode(nextMode);
 
-    const nextSessions = sessions.filter((s) => s.mode === nextMode);
-    if (nextSessions.length) {
-      selectSession(nextSessions[0]?.id ?? null);
-      return;
+    const nextId = sessions.find((s) => s.mode === nextMode)?.id ?? null;
+    selectSession(nextId);
+  };
+
+  const handleRenameSession = async (sessionId: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      message.error("会话名称不能为空");
+      throw new Error("Session name cannot be empty");
     }
 
-    selectSession(null);
-    const name = defaultSessionName(nextMode, 0);
     setLoadingSessions(true);
-    void createSession({ projectPath, name, mode: nextMode })
-      .then((created) => {
-        setSessions((prev) => [created, ...prev]);
-        selectSession(created.id);
-      })
-      .catch((error) => {
-        message.error(`创建会话失败: ${String(error)}`);
-      })
-      .finally(() => {
-        setLoadingSessions(false);
-      });
+    try {
+      await renameSession({ projectPath, sessionId, newName: trimmed });
+      await refreshSessions();
+    } catch (error) {
+      message.error(`重命名会话失败: ${String(error)}`);
+      throw error;
+    } finally {
+      setLoadingSessions(false);
+    }
   };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    setLoadingSessions(true);
+    try {
+      await deleteSession({ projectPath, sessionId });
+      await refreshSessions();
+    } catch (error) {
+      message.error(`删除会话失败: ${String(error)}`);
+      throw error;
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const sortedSessions = useMemo(() => {
+    const next = sessions.slice();
+    next.sort((a, b) => b.updated_at - a.updated_at);
+    return next;
+  }, [sessions]);
 
   const handleSend = async (content: string) => {
     if (!currentSession || busy) return;
@@ -364,7 +385,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
             <Button
               size="small"
               icon={<PlusOutlined />}
-              onClick={handleCreateSession}
+              onClick={() => setCreateModalOpen(true)}
               disabled={busy}
             />
             <Button
@@ -390,12 +411,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         </div>
 
         <div className="ai-panel-session">
-          <SessionList
-            sessions={sessions
-              .filter((s) => s.mode === mode)
-              .map((s) => ({ id: s.id, name: s.name }))}
+          <SessionSelector
+            sessions={sortedSessions}
             currentSessionId={currentSessionId}
             onSelect={handleSelectSession}
+            onOpenCreate={() => setCreateModalOpen(true)}
+            onRename={handleRenameSession}
+            onDelete={handleDeleteSession}
             disabled={busy}
           />
         </div>
@@ -421,6 +443,14 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       />
 
       <ChatInput onSend={handleSend} disabled={busy || !currentSession} />
+
+      <CreateSessionModal
+        open={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onCreate={handleCreateSession}
+        defaultMode={mode}
+        confirmLoading={loadingSessions}
+      />
     </div>
   );
 }

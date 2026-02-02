@@ -71,3 +71,24 @@ export async function addSessionMessage(params: {
   })) as SessionMessage;
 }
 
+export async function renameSession(params: {
+  projectPath: string;
+  sessionId: string;
+  newName: string;
+}): Promise<void> {
+  await invoke("rename_session", {
+    project_path: params.projectPath,
+    session_id: params.sessionId,
+    new_name: params.newName,
+  });
+}
+
+export async function deleteSession(params: {
+  projectPath: string;
+  sessionId: string;
+}): Promise<void> {
+  await invoke("delete_session", {
+    project_path: params.projectPath,
+    session_id: params.sessionId,
+  });
+}
