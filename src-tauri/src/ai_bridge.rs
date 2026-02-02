@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::path::PathBuf;
@@ -50,15 +51,63 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
 }
 
-fn get_repo_root_dir() -> Result<PathBuf, String> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
+fn dev_repo_root_dir() -> Option<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(|p| p.to_path_buf())
-        .ok_or_else(|| "Failed to resolve repo root directory".to_string())
 }
 
-fn get_ai_engine_cli_path() -> Result<PathBuf, String> {
+fn current_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+fn find_ai_engine_in_dir(dir: &Path) -> Option<PathBuf> {
+    let direct_names = if cfg!(windows) {
+        vec!["ai-engine.exe".to_string(), "ai-engine".to_string()]
+    } else {
+        vec!["ai-engine".to_string()]
+    };
+
+    for name in direct_names {
+        let p = dir.join(&name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Tauri may rename external binaries with a target triple suffix; best-effort scan.
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with("ai-engine") && path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_bundled_ai_engine() -> Option<PathBuf> {
+    let exe_dir = current_exe_dir()?;
+    let candidates = [
+        exe_dir.clone(),
+        exe_dir.join("../Resources"),
+        exe_dir.join("../MacOS"),
+        exe_dir.join("../bin"),
+    ];
+    for dir in candidates {
+        if let Some(found) = find_ai_engine_in_dir(&dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn get_ai_engine_path() -> Result<PathBuf, String> {
     if let Ok(raw) = std::env::var("CREATORAI_AI_ENGINE_CLI_PATH") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
@@ -66,7 +115,9 @@ fn get_ai_engine_cli_path() -> Result<PathBuf, String> {
             let resolved = if candidate.is_absolute() {
                 candidate
             } else {
-                get_repo_root_dir()?.join(candidate)
+                dev_repo_root_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(candidate)
             };
             if !resolved.exists() {
                 return Err(format!(
@@ -78,15 +129,47 @@ fn get_ai_engine_cli_path() -> Result<PathBuf, String> {
         }
     }
 
-    let root = get_repo_root_dir()?;
-    let ai_engine_path = root.join("packages/ai-engine/src/cli.ts");
-    if !ai_engine_path.exists() {
-        return Err(format!(
-            "ai-engine CLI not found: {}",
-            ai_engine_path.display()
-        ));
+    if let Some(path) = find_bundled_ai_engine() {
+        return Ok(path);
     }
-    Ok(ai_engine_path)
+
+    if let Some(root) = dev_repo_root_dir() {
+        let ai_engine_path = root.join("packages/ai-engine/src/cli.ts");
+        if ai_engine_path.exists() {
+            return Ok(ai_engine_path);
+        }
+    }
+
+    Err(
+        "ai-engine CLI not found. If you're running a packaged build, reinstall/update the app. If you're running from source, ensure `packages/ai-engine/src/cli.ts` exists or set `CREATORAI_AI_ENGINE_CLI_PATH`.".to_string(),
+    )
+}
+
+fn is_script_path(path: &Path) -> bool {
+    matches!(path.extension().and_then(|s| s.to_str()), Some("ts" | "js"))
+}
+
+fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
+    let mut cmd = if is_script_path(path) {
+        let mut c = Command::new("bun");
+        c.arg("run").arg(path);
+
+        // For script execution, keep a stable cwd (prefer repo root when available).
+        if let Some(root) = dev_repo_root_dir().filter(|p| p.exists()) {
+            c.current_dir(root);
+        } else if let Some(parent) = path.parent() {
+            c.current_dir(parent);
+        }
+        c
+    } else {
+        Command::new(path)
+    };
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))
 }
 
 fn format_tool_runs(runs: &[ToolCall]) -> String {
@@ -106,18 +189,9 @@ fn format_tool_runs(runs: &[ToolCall]) -> String {
 }
 
 pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
-    let repo_root = get_repo_root_dir()?;
-    let ai_engine_path = get_ai_engine_cli_path()?;
+    let ai_engine_path = get_ai_engine_path()?;
 
-    let mut child = Command::new("bun")
-        .arg("run")
-        .arg(&ai_engine_path)
-        .current_dir(&repo_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))?;
+    let mut child = spawn_ai_engine(&ai_engine_path)?;
 
     let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
@@ -168,18 +242,9 @@ pub fn generate_compact_summary(
     parameters: Value,
     messages: Vec<Value>,
 ) -> Result<String, String> {
-    let repo_root = get_repo_root_dir()?;
-    let ai_engine_path = get_ai_engine_cli_path()?;
+    let ai_engine_path = get_ai_engine_path()?;
 
-    let mut child = Command::new("bun")
-        .arg("run")
-        .arg(&ai_engine_path)
-        .current_dir(&repo_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))?;
+    let mut child = spawn_ai_engine(&ai_engine_path)?;
 
     let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
@@ -232,9 +297,7 @@ pub fn run_chat_with_events(
     request: ChatRequest,
     events: Option<ChatEventHandler>,
 ) -> Result<ChatResponse, String> {
-    // 使用仓库根目录定位 ai-engine，使用 project_dir 作为工具执行的项目根目录。
-    let repo_root = get_repo_root_dir()?;
-    let ai_engine_path = get_ai_engine_cli_path()?;
+    let ai_engine_path = get_ai_engine_path()?;
 
     let provider_base_url = request
         .provider
@@ -247,16 +310,7 @@ pub fn run_chat_with_events(
     // 因此在该端点下我们只执行工具并直接返回结果。
     let direct_return_tool_results = provider_base_url.contains("/geminicli/v1");
 
-    // 启动 bun 运行 ai-engine
-    let mut child = Command::new("bun")
-        .arg("run")
-        .arg(&ai_engine_path)
-        .current_dir(&repo_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))?;
+    let mut child = spawn_ai_engine(&ai_engine_path)?;
 
     let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;

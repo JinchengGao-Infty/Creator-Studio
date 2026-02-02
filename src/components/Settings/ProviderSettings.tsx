@@ -1,24 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ColumnsType } from "antd/es/table";
 import {
   Button,
   Card,
+  Dropdown,
   Form,
   Input,
+  List,
   Modal,
-  Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
+  Tooltip,
   message,
 } from "antd";
 import {
-  DeleteOutlined,
   EditOutlined,
+  EllipsisOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import { formatError } from "../../utils/error";
 
@@ -35,6 +36,17 @@ interface Provider {
 interface GlobalConfig {
   providers: Provider[];
   active_provider_id: string | null;
+}
+
+function emitConfigChanged() {
+  window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
+}
+
+function formatUnixTime(ts: number | null | undefined): string {
+  if (!ts) return "";
+  const date = new Date(ts * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function ProviderSettings() {
@@ -75,13 +87,15 @@ export default function ProviderSettings() {
   }) => {
     try {
       if (editingProvider) {
+        const baseUrlChanged = values.base_url !== editingProvider.base_url;
+        const typeChanged = values.provider_type !== editingProvider.provider_type;
         await invoke("update_provider", {
           provider: {
             id: editingProvider.id,
             name: values.name,
             base_url: values.base_url,
-            models: editingProvider.models,
-            models_updated_at: editingProvider.models_updated_at,
+            models: baseUrlChanged || typeChanged ? [] : editingProvider.models,
+            models_updated_at: baseUrlChanged || typeChanged ? null : editingProvider.models_updated_at,
             provider_type: values.provider_type,
             headers: editingProvider.headers ?? null,
           },
@@ -108,6 +122,7 @@ export default function ProviderSettings() {
           },
           apiKey,
         });
+        await invoke("set_active_provider", { providerId: id });
         message.success("添加成功");
       }
 
@@ -115,6 +130,7 @@ export default function ProviderSettings() {
       form.resetFields();
       setEditingProvider(null);
       void loadProviders();
+      emitConfigChanged();
     } catch (error) {
       message.error(`操作失败: ${formatError(error)}`);
     }
@@ -125,6 +141,7 @@ export default function ProviderSettings() {
       await invoke("delete_provider", { providerId: id });
       message.success("删除成功");
       void loadProviders();
+      emitConfigChanged();
     } catch (error) {
       message.error(`删除失败: ${formatError(error)}`);
     }
@@ -135,6 +152,7 @@ export default function ProviderSettings() {
       await invoke("set_active_provider", { providerId: id });
       message.success("已设置为当前 Provider");
       void loadProviders();
+      emitConfigChanged();
     } catch (error) {
       message.error(`设置失败: ${formatError(error)}`);
     }
@@ -151,6 +169,7 @@ export default function ProviderSettings() {
         key: "refresh",
       });
       void loadProviders();
+      emitConfigChanged();
     } catch (error) {
       message.error({ content: `获取失败: ${formatError(error)}`, key: "refresh" });
     }
@@ -179,66 +198,13 @@ export default function ProviderSettings() {
     setModalVisible(true);
   };
 
-  const columns: ColumnsType<Provider> = [
-    {
-      title: "名称",
-      dataIndex: "name",
-      key: "name",
-      render: (name: string, record) => (
-        <Space>
-          {name}
-          {record.id === activeProviderId && <Tag color="green">当前</Tag>}
-        </Space>
-      ),
-    },
-    {
-      title: "Base URL",
-      dataIndex: "base_url",
-      key: "base_url",
-      ellipsis: true,
-    },
-    {
-      title: "模型数",
-      dataIndex: "models",
-      key: "models",
-      render: (models: string[] | undefined) => models?.length || 0,
-    },
-    {
-      title: "操作",
-      key: "action",
-      render: (_: unknown, record) => (
-        <Space>
-          {record.id !== activeProviderId && (
-            <Button size="small" onClick={() => void handleSetActive(record.id)}>
-              设为当前
-            </Button>
-          )}
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            onClick={() => void handleRefreshModels(record.id)}
-          >
-            刷新模型
-          </Button>
-          <Button
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => void openEditModal(record)}
-          />
-          <Popconfirm title="确定删除？" onConfirm={() => void handleDelete(record.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
-
   return (
     <Card
-      title="Provider 管理"
+      title="Provider"
       extra={
         <Button
           type="primary"
+          size="small"
           icon={<PlusOutlined />}
           onClick={() => {
             setEditingProvider(null);
@@ -246,16 +212,117 @@ export default function ProviderSettings() {
             setModalVisible(true);
           }}
         >
-          添加 Provider
+          添加
         </Button>
       }
     >
-      <Table
+      <List
         dataSource={providers}
-        columns={columns}
-        rowKey="id"
         loading={loading}
-        pagination={false}
+        locale={{ emptyText: "暂无 Provider，点击右上角添加" }}
+        renderItem={(record) => {
+          const isActive = record.id === activeProviderId;
+          const updated = formatUnixTime(record.models_updated_at);
+          const modelCount = record.models?.length ?? 0;
+          const type =
+            record.provider_type === "openai-compatible"
+              ? "OpenAI"
+              : record.provider_type === "google"
+                ? "Google"
+                : record.provider_type === "anthropic"
+                  ? "Anthropic"
+                  : record.provider_type;
+
+          const menuItems = [
+            !isActive
+              ? {
+                  key: "active",
+                  label: "设为当前",
+                  icon: <SafetyCertificateOutlined />,
+                  onClick: () => void handleSetActive(record.id),
+                }
+              : null,
+            {
+              key: "refresh",
+              label: "刷新模型",
+              icon: <ReloadOutlined />,
+              onClick: () => void handleRefreshModels(record.id),
+            },
+            {
+              key: "edit",
+              label: "编辑",
+              icon: <EditOutlined />,
+              onClick: () => void openEditModal(record),
+            },
+            {
+              key: "delete",
+              danger: true,
+              label: "删除",
+              onClick: () => {
+                Modal.confirm({
+                  title: "删除 Provider",
+                  content: `确定要删除「${record.name}」吗？此操作会移除本地配置（API Key 将从 Keychain 删除）。`,
+                  okText: "删除",
+                  okType: "danger",
+                  cancelText: "取消",
+                  onOk: () => handleDelete(record.id),
+                });
+              },
+            },
+          ].filter(Boolean) as Array<{
+            key: string;
+            label: string;
+            icon?: ReactNode;
+            danger?: boolean;
+            onClick?: () => void;
+          }>;
+
+          return (
+            <List.Item
+              style={{ padding: "10px 0" }}
+              actions={[
+                <Dropdown
+                  key="menu"
+                  trigger={["click"]}
+                  menu={{
+                    items: menuItems.map((i) => ({
+                      key: i.key,
+                      label: i.label,
+                      icon: i.icon,
+                      danger: i.danger,
+                      onClick: i.onClick,
+                    })),
+                  }}
+                >
+                  <Button size="small" type="text" icon={<EllipsisOutlined />} />
+                </Dropdown>,
+              ]}
+            >
+              <div style={{ minWidth: 0 }}>
+                <Space size={6} wrap>
+                  <Tooltip title={record.id}>
+                    <span style={{ fontWeight: 600 }}>{record.name}</span>
+                  </Tooltip>
+                  {isActive ? <Tag color="green">当前</Tag> : null}
+                  <Tag icon={<SafetyCertificateOutlined />}>{type}</Tag>
+                </Space>
+
+                <div style={{ marginTop: 6 }}>
+                  <Tooltip title={record.base_url}>
+                    <span style={{ color: "var(--text-secondary)", fontSize: 12, wordBreak: "break-all" }}>
+                      {record.base_url}
+                    </span>
+                  </Tooltip>
+                </div>
+
+                <div style={{ marginTop: 6, color: "var(--text-muted)", fontSize: 12 }}>
+                  模型：{modelCount ? `${modelCount} 个` : "未获取"}
+                  {updated ? ` · 更新：${updated}` : ""}
+                </div>
+              </div>
+            </List.Item>
+          );
+        }}
       />
 
       <Modal

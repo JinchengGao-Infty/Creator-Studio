@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Button, Card, Form, InputNumber, Select, Slider, message } from "antd";
+import { Button, Card, Form, Input, InputNumber, Select, Slider, Space, Tooltip, message } from "antd";
+import { ReloadOutlined } from "@ant-design/icons";
 import { formatError } from "../../utils/error";
 
 interface ModelParameters {
@@ -29,20 +30,35 @@ export default function ModelSettings() {
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
 
-  const loadConfig = async () => {
-    setLoading(true);
+  const loadProviders = async (): Promise<GlobalConfig | null> => {
     try {
       const config = (await invoke("get_config")) as GlobalConfig;
       setProviders(config.providers || []);
-      setActiveProviderId(config.active_provider_id ?? null);
+      const nextActiveId = config.active_provider_id ?? null;
+      setActiveProviderId(nextActiveId);
 
-      if (config.active_provider_id) {
-        const provider = config.providers.find((p) => p.id === config.active_provider_id);
-        if (provider) setModels(provider.models || []);
+      if (nextActiveId) {
+        const provider = (config.providers || []).find((p) => p.id === nextActiveId);
+        setModels(provider?.models || []);
       } else {
         setModels([]);
       }
+      return config;
+    } catch {
+      setProviders([]);
+      setActiveProviderId(null);
+      setModels([]);
+      return null;
+    }
+  };
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      const config = await loadProviders();
+      if (!config) throw new Error("读取配置失败");
 
       form.setFieldsValue({
         model: config.default_parameters.model,
@@ -59,20 +75,45 @@ export default function ModelSettings() {
   };
 
   useEffect(() => {
-    void loadConfig();
+    void loadAll();
+  }, []);
+
+  useEffect(() => {
+    const onConfigChanged = () => {
+      void loadProviders();
+    };
+    window.addEventListener("creatorai:globalConfigChanged", onConfigChanged);
+    return () => window.removeEventListener("creatorai:globalConfigChanged", onConfigChanged);
   }, []);
 
   const handleProviderChange = async (providerId: string) => {
     try {
       await invoke("set_active_provider", { providerId });
-      const provider = providers.find((p) => p.id === providerId);
-      if (provider) {
-        setModels(provider.models || []);
-        setActiveProviderId(providerId);
-        form.setFieldsValue({ model: undefined });
-      }
+      await loadProviders();
+      form.setFieldsValue({ model: undefined });
     } catch (error) {
       message.error(`切换失败: ${formatError(error)}`);
+    }
+  };
+
+  const handleRefreshModels = async () => {
+    if (!activeProviderId) {
+      message.error("请先选择 Provider");
+      return;
+    }
+    setRefreshingModels(true);
+    message.loading({ content: "正在获取模型列表...", key: "models", duration: 0 });
+    try {
+      const list = (await invoke("refresh_provider_models", {
+        providerId: activeProviderId,
+      })) as string[];
+      setModels(list || []);
+      message.success({ content: `获取到 ${(list || []).length} 个模型`, key: "models" });
+      window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
+    } catch (error) {
+      message.error({ content: `获取失败: ${formatError(error)}`, key: "models" });
+    } finally {
+      setRefreshingModels(false);
     }
   };
 
@@ -95,31 +136,46 @@ export default function ModelSettings() {
         form={form}
         layout="vertical"
         onFinish={(v) => void handleSave(v)}
-        style={{ maxWidth: 500 }}
       >
         <Form.Item label="当前 Provider">
-          <Select
-            value={activeProviderId ?? undefined}
-            onChange={(v) => void handleProviderChange(v)}
-            placeholder="选择 Provider"
-          >
-            {providers.map((p) => (
-              <Select.Option key={p.id} value={p.id}>
-                {p.name}
-              </Select.Option>
-            ))}
-          </Select>
+          <Space.Compact style={{ width: "100%" }}>
+            <Select
+              value={activeProviderId ?? undefined}
+              onChange={(v) => void handleProviderChange(v)}
+              placeholder="选择 Provider"
+              style={{ flex: 1, minWidth: 0 }}
+              options={providers.map((p) => ({ value: p.id, label: p.name }))}
+            />
+            <Tooltip title="刷新模型列表">
+              <Button
+                icon={<ReloadOutlined />}
+                onClick={() => void handleRefreshModels()}
+                loading={refreshingModels}
+                disabled={!activeProviderId}
+              />
+            </Tooltip>
+          </Space.Compact>
         </Form.Item>
 
-        <Form.Item name="model" label="模型" rules={[{ required: true, message: "请选择模型" }]}>
-          <Select placeholder="选择模型" showSearch>
-            {models.map((m) => (
-              <Select.Option key={m} value={m}>
-                {m}
-              </Select.Option>
-            ))}
-          </Select>
-        </Form.Item>
+        {models.length ? (
+          <Form.Item name="model" label="模型" rules={[{ required: true, message: "请选择模型" }]}>
+            <Select
+              placeholder="选择模型"
+              showSearch
+              optionFilterProp="label"
+              options={models.map((m) => ({ value: m, label: m }))}
+            />
+          </Form.Item>
+        ) : (
+          <Form.Item
+            name="model"
+            label="模型"
+            rules={[{ required: true, message: "请输入模型名称" }]}
+            extra="模型列表为空时可手动输入；也可以先点击“刷新模型”。"
+          >
+            <Input placeholder="如：gpt-4o-mini / deepseek-chat" />
+          </Form.Item>
+        )}
 
         <Form.Item
           name="temperature"

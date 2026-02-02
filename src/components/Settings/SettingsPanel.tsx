@@ -6,15 +6,17 @@ export default function SettingsPanel() {
   return (
     <div style={{ padding: 16 }}>
       <Tabs
+        size="small"
+        destroyInactiveTabPane
         items={[
           {
             key: "provider",
-            label: "Provider 配置",
+            label: "Provider",
             children: <ProviderSettings />,
           },
           {
             key: "model",
-            label: "模型参数",
+            label: "模型",
             children: <ModelSettings />,
           },
         ]}
@@ -22,4 +24,3 @@ export default function SettingsPanel() {
     </div>
   );
 }
-
