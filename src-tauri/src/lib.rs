@@ -621,6 +621,7 @@ mod tests {
             summary: Some("本次生成了开场冲突".to_string()),
             word_count: Some(120),
             applied: Some(false),
+            tool_calls: None,
         };
         tauri::async_runtime::block_on(add_message(
             project_path.clone(),
