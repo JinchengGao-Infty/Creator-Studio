@@ -4,8 +4,31 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::file_ops::{append, list, read, search, write};
+use crate::session::{SessionMode, ToolCall, ToolCallStatus};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallStartEvent {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallEndEvent {
+    pub id: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct ChatEventHandler {
+    pub on_tool_call_start: Arc<dyn Fn(ToolCallStartEvent) + Send + Sync>,
+    pub on_tool_call_end: Arc<dyn Fn(ToolCallEndEvent) + Send + Sync>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -14,11 +37,13 @@ pub struct ChatRequest {
     pub system_prompt: String,
     pub messages: Vec<Value>,
     pub project_dir: String,
+    pub mode: SessionMode,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
+    pub tool_calls: Vec<ToolCall>,
 }
 
 fn get_repo_root_dir() -> Result<PathBuf, String> {
@@ -41,16 +66,17 @@ fn get_ai_engine_cli_path() -> Result<PathBuf, String> {
     Ok(ai_engine_path)
 }
 
-fn format_tool_runs(runs: Vec<(String, String, Value, Result<String, String>)>) -> String {
+fn format_tool_runs(runs: &[ToolCall]) -> String {
     let mut out = String::new();
-    for (id, name, args, result) in runs {
-        let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string());
-        out.push_str(&format!("[tool] {name}\n"));
-        out.push_str(&format!("id: {id}\n"));
+    for run in runs {
+        let args_json = serde_json::to_string(&run.args).unwrap_or_else(|_| "{}".to_string());
+        out.push_str(&format!("[tool] {}\n", run.name));
+        out.push_str(&format!("id: {}\n", run.id));
         out.push_str(&format!("args: {args_json}\n"));
-        match result {
-            Ok(value) => out.push_str(&format!("result: {value}\n\n")),
-            Err(err) => out.push_str(&format!("error: {err}\n\n")),
+        if let Some(value) = &run.result {
+            out.push_str(&format!("result: {value}\n\n"));
+        } else if let Some(err) = &run.error {
+            out.push_str(&format!("error: {err}\n\n"));
         }
     }
     out.trim_end().to_string()
@@ -115,6 +141,13 @@ pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String
 }
 
 pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
+    run_chat_with_events(request, None)
+}
+
+pub fn run_chat_with_events(
+    request: ChatRequest,
+    events: Option<ChatEventHandler>,
+) -> Result<ChatResponse, String> {
     // 使用仓库根目录定位 ai-engine，使用 project_dir 作为工具执行的项目根目录。
     let repo_root = get_repo_root_dir()?;
     let ai_engine_path = get_ai_engine_cli_path()?;
@@ -159,6 +192,8 @@ pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
     stdin.flush()
         .map_err(|e| format!("Failed to flush stdin: {e}"))?;
 
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+
     // 循环处理响应
     loop {
         let mut line = String::new();
@@ -180,7 +215,7 @@ pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
             Some("done") => {
                 let content = response["content"].as_str().unwrap_or("").to_string();
                 let _ = child.wait();
-                return Ok(ChatResponse { content });
+                return Ok(ChatResponse { content, tool_calls });
             }
             Some("error") => {
                 let message = response["message"].as_str().unwrap_or("Unknown error");
@@ -192,29 +227,63 @@ pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
                     .as_array()
                     .ok_or("Invalid tool_call format")?;
 
-                let mut runs: Vec<(String, String, Value, Result<String, String>)> = Vec::new();
+                let mut results = Vec::new();
+
                 for call in calls {
                     let name = call["name"].as_str().unwrap_or("").to_string();
                     let args = call["args"].clone();
                     let id = call["id"].as_str().unwrap_or("").to_string();
 
-                    let result = execute_tool(&request.project_dir, &name, &args);
-                    runs.push((id, name, args, result));
+                    if let Some(handler) = &events {
+                        (handler.on_tool_call_start)(ToolCallStartEvent {
+                            id: id.clone(),
+                            name: name.clone(),
+                            args: args.clone(),
+                        });
+                    }
+
+                    let started = Instant::now();
+                    let result =
+                        execute_tool(&request.project_dir, request.mode.clone(), &name, &args);
+                    let duration = started.elapsed().as_millis() as u64;
+
+                    let (status, result_value, error_value) = match result {
+                        Ok(value) => (ToolCallStatus::Success, Some(value), None),
+                        Err(err) => (ToolCallStatus::Error, None, Some(err)),
+                    };
+
+                    if let Some(handler) = &events {
+                        (handler.on_tool_call_end)(ToolCallEndEvent {
+                            id: id.clone(),
+                            result: result_value.clone(),
+                            error: error_value.clone(),
+                        });
+                    }
+
+                    tool_calls.push(ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        args: args.clone(),
+                        status,
+                        result: result_value.clone(),
+                        error: error_value.clone(),
+                        duration: Some(duration),
+                    });
+
+                    match (&result_value, &error_value) {
+                        (Some(value), None) => results.push(json!({ "id": id, "result": value })),
+                        (_, Some(err)) => {
+                            results.push(json!({ "id": id, "result": "", "error": err }))
+                        }
+                        _ => results.push(json!({ "id": id, "result": "" })),
+                    }
                 }
 
                 if direct_return_tool_results {
-                    let content = format_tool_runs(runs);
+                    let content = format_tool_runs(&tool_calls);
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Ok(ChatResponse { content });
-                }
-
-                let mut results = Vec::new();
-                for (id, _name, _args, result) in runs {
-                    match result {
-                        Ok(value) => results.push(json!({ "id": id, "result": value })),
-                        Err(err) => results.push(json!({ "id": id, "result": "", "error": err })),
-                    }
+                    return Ok(ChatResponse { content, tool_calls });
                 }
 
                 let tool_result = json!({
@@ -242,12 +311,23 @@ fn as_u32(value: &Value) -> Option<u32> {
         .or_else(|| value.as_f64().and_then(|v| (v as i64).try_into().ok()))
 }
 
-fn execute_tool(project_dir: &str, name: &str, args: &Value) -> Result<String, String> {
+fn as_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|v| i64::try_from(v).ok()))
+        .or_else(|| value.as_f64().and_then(|v| if v.is_finite() { Some(v as i64) } else { None }))
+}
+
+fn execute_tool(project_dir: &str, mode: SessionMode, name: &str, args: &Value) -> Result<String, String> {
+    if matches!(mode, SessionMode::Discussion) && matches!(name, "write" | "append") {
+        return Err("Tool not allowed in Discussion mode".to_string());
+    }
+
     let project_root = Path::new(project_dir);
     match name {
         "read" => {
             let path = args["path"].as_str().ok_or("Missing path")?;
-            let offset = as_u32(&args["offset"]);
+            let offset = as_i64(&args["offset"]);
             let limit = as_u32(&args["limit"]);
 
             let params = read::ReadParams {

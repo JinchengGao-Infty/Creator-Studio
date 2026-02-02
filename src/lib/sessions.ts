@@ -13,10 +13,21 @@ export interface Session {
 
 export type MessageRole = "User" | "Assistant" | "System";
 
+export interface ToolCallRecord {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: "calling" | "success" | "error";
+  result?: string;
+  error?: string;
+  duration?: number;
+}
+
 export interface MessageMetadata {
-  summary: string | null;
-  word_count: number | null;
-  applied: boolean | null;
+  summary?: string | null;
+  word_count?: number | null;
+  applied?: boolean | null;
+  tool_calls?: ToolCallRecord[] | null;
 }
 
 export interface SessionMessage {
@@ -70,4 +81,3 @@ export async function addSessionMessage(params: {
     metadata: params.metadata ?? null,
   })) as SessionMessage;
 }
-

@@ -38,6 +38,62 @@ fn is_probably_binary(file: &mut File) -> Result<bool, String> {
     Ok(probe[..n].contains(&0u8))
 }
 
+fn search_file(
+    project_root: &Path,
+    path: &Path,
+    query: &str,
+    matches: &mut Vec<SearchMatch>,
+) -> Result<(), String> {
+    if matches.len() >= MAX_MATCHES {
+        return Ok(());
+    }
+
+    let mut f = File::open(path).map_err(|e| format!("Failed to open file: {e}"))?;
+    if is_probably_binary(&mut f)? {
+        return Ok(());
+    }
+    f.rewind().map_err(|e| format!("Failed to rewind file: {e}"))?;
+
+    let mut reader = BufReader::new(f);
+    let mut line_no: u32 = 0;
+    let mut line = String::new();
+    loop {
+        if matches.len() >= MAX_MATCHES {
+            break;
+        }
+
+        line.clear();
+        let bytes_read = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                // Non-UTF8 -> treat as binary and ignore.
+                break;
+            }
+            Err(_) => break,
+        };
+        if bytes_read == 0 {
+            break;
+        }
+        line_no = line_no.saturating_add(1);
+
+        if line.contains(query) {
+            let content = line.trim_end_matches(['\n', '\r']).to_string();
+            let rel = path
+                .strip_prefix(project_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            matches.push(SearchMatch {
+                file: rel,
+                line: line_no,
+                content,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn walk_and_search(
     project_root: &Path,
     root: &Path,
@@ -79,52 +135,7 @@ fn walk_and_search(
                 continue;
             }
 
-            let mut f = match File::open(&path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            if is_probably_binary(&mut f)? {
-                continue;
-            }
-            if f.rewind().is_err() {
-                continue;
-            }
-
-            let mut reader = BufReader::new(f);
-            let mut line_no: u32 = 0;
-            let mut line = String::new();
-            loop {
-                line.clear();
-                let bytes_read = match reader.read_line(&mut line) {
-                    Ok(n) => n,
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                        // Non-UTF8 -> treat as binary and ignore.
-                        break;
-                    }
-                    Err(_) => break,
-                };
-                if bytes_read == 0 {
-                    break;
-                }
-                line_no = line_no.saturating_add(1);
-
-                if line.contains(query) {
-                    let content = line.trim_end_matches(['\n', '\r']).to_string();
-                    let rel = path
-                        .strip_prefix(project_root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .to_string();
-                    matches.push(SearchMatch {
-                        file: rel,
-                        line: line_no,
-                        content,
-                    });
-                    if matches.len() >= MAX_MATCHES {
-                        break;
-                    }
-                }
-            }
+            search_file(project_root, &path, query, matches)?;
         }
     }
     Ok(())
@@ -140,12 +151,15 @@ pub fn search_in_files(project_dir: &Path, params: SearchParams) -> Result<Searc
 
     let meta = fs::symlink_metadata(&full_path)
         .map_err(|e| format!("Failed to stat '{}': {e}", relative))?;
-    if !meta.file_type().is_dir() {
-        return Err(format!("'{}' is not a directory", relative));
-    }
 
     let mut matches = Vec::new();
-    walk_and_search(&project_root, &full_path, &params.query, &mut matches)?;
+    if meta.file_type().is_dir() {
+        walk_and_search(&project_root, &full_path, &params.query, &mut matches)?;
+    } else if meta.file_type().is_file() {
+        search_file(&project_root, &full_path, &params.query, &mut matches)?;
+    } else {
+        return Err(format!("'{}' is not a file or directory", relative));
+    }
 
     Ok(SearchResult { matches })
 }

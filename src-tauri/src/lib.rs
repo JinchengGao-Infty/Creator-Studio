@@ -219,25 +219,44 @@ fn file_search(project_dir: String, params: SearchParams) -> Result<SearchResult
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_chat(
+    app: tauri::AppHandle,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
     messages: Vec<serde_json::Value>,
     project_dir: String,
-) -> Result<String, String> {
+    mode: session::SessionMode,
+) -> Result<ai_bridge::ChatResponse, String> {
+    use std::sync::Arc;
+    use tauri::Emitter;
+
     let request = ai_bridge::ChatRequest {
         provider,
         parameters,
         system_prompt,
         messages,
         project_dir,
+        mode,
     };
 
-    let response = tauri::async_runtime::spawn_blocking(move || ai_bridge::run_chat(request))
+    let app_for_start = app.clone();
+    let app_for_end = app.clone();
+    let events = ai_bridge::ChatEventHandler {
+        on_tool_call_start: Arc::new(move |payload| {
+            let _ = app_for_start.emit("ai:tool_call_start", payload);
+        }),
+        on_tool_call_end: Arc::new(move |payload| {
+            let _ = app_for_end.emit("ai:tool_call_end", payload);
+        }),
+    };
+
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::run_chat_with_events(request, Some(events))
+    })
         .await
         .map_err(|e| format!("ai_chat join error: {e}"))??;
 
-    Ok(response.content)
+    Ok(response)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -362,6 +381,19 @@ mod tests {
         assert!(read_2.content.contains("00001| hello"));
         assert!(read_2.content.contains("00002| world"));
 
+        let read_tail = file_read(
+            project_dir.clone(),
+            ReadParams {
+                path: "test.txt".to_string(),
+                offset: Some(-1),
+                limit: None,
+            },
+        )
+        .expect("file_read tail");
+        assert_eq!(read_tail.total_lines, 2);
+        assert!(!read_tail.content.contains("00001| hello"));
+        assert!(read_tail.content.contains("00002| world"));
+
         let listed = file_list(project_dir.clone(), ListParams { path: None }).expect("file_list");
         assert!(listed
             .entries
@@ -380,6 +412,19 @@ mod tests {
             .matches
             .iter()
             .any(|m| m.file.ends_with("test.txt") && m.line == 2));
+
+        let searched_file = file_search(
+            project_dir.clone(),
+            SearchParams {
+                query: "hello".to_string(),
+                path: Some("test.txt".to_string()),
+            },
+        )
+        .expect("file_search file");
+        assert!(searched_file
+            .matches
+            .iter()
+            .any(|m| m.file.ends_with("test.txt") && m.line == 1));
 
         file_write(
             project_dir.clone(),

@@ -36,11 +36,15 @@ function defaultSessionName(mode: SessionMode, existingCount: number): string {
 
 function toPanelMessage(msg: { id: string; role: string; content: string; timestamp: number; metadata?: unknown }): PanelMessage {
   const role = msg.role === "User" ? "user" : msg.role === "System" ? "system" : "assistant";
+  const toolCalls = Array.isArray((msg.metadata as { tool_calls?: unknown } | null)?.tool_calls)
+    ? (((msg.metadata as { tool_calls: unknown }).tool_calls as unknown[]) as ToolCall[])
+    : undefined;
   return {
     id: msg.id,
     role,
     content: msg.content,
     timestamp: msg.timestamp * 1000,
+    toolCalls,
     metadata: msg.metadata,
   };
 }
@@ -311,9 +315,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         .slice(-20)
         .map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
 
-      const reply = await aiChat({
+      const { content: reply, toolCalls } = await aiChat({
         projectDir: projectPath,
         messages: messagesForAi,
+        mode,
       });
 
       const streamPromise = realStreamingRef.current
@@ -333,6 +338,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         sessionId: currentSession.id,
         role: "Assistant",
         content: reply,
+        metadata: toolCalls.length ? { tool_calls: toolCalls } : null,
       });
 
       await streamPromise;
