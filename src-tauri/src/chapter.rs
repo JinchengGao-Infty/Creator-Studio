@@ -133,6 +133,15 @@ fn create_chapter_sync(project_path: String, title: String) -> Result<ChapterMet
     Ok(meta)
 }
 
+pub(crate) fn create_chapter_with_content_sync(
+    project_path: String,
+    title: String,
+    content: String,
+) -> Result<ChapterMeta, String> {
+    let created = create_chapter_sync(project_path.clone(), title)?;
+    save_chapter_content_sync(project_path, created.id, content)
+}
+
 fn get_chapter_content_sync(project_path: String, chapter_id: String) -> Result<String, String> {
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
