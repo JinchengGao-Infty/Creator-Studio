@@ -1,0 +1,8 @@
+{
+  "id": "t1769964835",
+  "title": "T2.4+T2.5 Provider 配置 UI + 模型参数 UI",
+  "allow": [
+    "src/**/*"
+  ],
+  "created": 1769964835
+}

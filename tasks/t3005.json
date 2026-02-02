@@ -1,0 +1,10 @@
+{
+  "id": "t3005",
+  "title": "T3.5 实现导入 txt 拆章",
+  "allow": [
+    "src/**/*",
+    "src-tauri/src/**/*",
+    "src-tauri/Cargo.toml"
+  ],
+  "created": 1769969900
+}

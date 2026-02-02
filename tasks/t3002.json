@@ -1,0 +1,10 @@
+{
+  "id": "t3002",
+  "title": "T3.2 实现项目打开/新建 UI",
+  "allow": [
+    "src/**/*",
+    "src-tauri/src/lib.rs",
+    "src-tauri/Cargo.toml"
+  ],
+  "created": 1769969600
+}

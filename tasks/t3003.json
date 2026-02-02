@@ -1,0 +1,8 @@
+{
+  "id": "t3003",
+  "title": "T3.3 实现章节 CRUD 后端",
+  "allow": [
+    "src-tauri/src/**/*"
+  ],
+  "created": 1769969700
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@creatorai/ai-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "ai-engine": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "ai": "^4.0.0",
+    "@ai-sdk/openai-compatible": "^0.1.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

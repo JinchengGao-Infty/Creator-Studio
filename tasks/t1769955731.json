@@ -1,0 +1,8 @@
+{
+  "id": "t1769955731",
+  "title": "T1.5 实现 Tauri 和 ai-engine 通信",
+  "allow": [
+    "**/*"
+  ],
+  "created": 1769955731
+}
