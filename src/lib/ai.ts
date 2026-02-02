@@ -84,6 +84,10 @@ function systemPromptForMode(mode: SessionMode, projectDir: string): string {
   return DEFAULT_SYSTEM_PROMPT;
 }
 
+export function getSystemPromptForMode(mode: SessionMode, projectDir: string): string {
+  return systemPromptForMode(mode, projectDir);
+}
+
 export async function getActiveChatConfig(): Promise<{
   provider: {
     id: string;

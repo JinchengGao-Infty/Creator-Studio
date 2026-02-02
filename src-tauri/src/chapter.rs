@@ -345,21 +345,21 @@ fn reorder_chapters_sync(
     Ok(index.chapters)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn list_chapters(project_path: String) -> Result<Vec<ChapterMeta>, String> {
     tauri::async_runtime::spawn_blocking(move || list_chapters_sync(project_path))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn create_chapter(project_path: String, title: String) -> Result<ChapterMeta, String> {
     tauri::async_runtime::spawn_blocking(move || create_chapter_sync(project_path, title))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn get_chapter_content(
     project_path: String,
     chapter_id: String,
@@ -369,7 +369,7 @@ pub async fn get_chapter_content(
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn save_chapter_content(
     project_path: String,
     chapter_id: String,
@@ -382,7 +382,7 @@ pub async fn save_chapter_content(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn rename_chapter(
     project_path: String,
     chapter_id: String,
@@ -395,14 +395,14 @@ pub async fn rename_chapter(
     .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn delete_chapter(project_path: String, chapter_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || delete_chapter_sync(project_path, chapter_id))
         .await
         .map_err(|e| format!("Task join error: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub async fn reorder_chapters(
     project_path: String,
     chapter_ids: Vec<String>,

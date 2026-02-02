@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Input, Modal, message } from "antd";
 import { ImportOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
@@ -23,24 +23,23 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
   const [createTitle, setCreateTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const selectionCauseRef = useRef<"user" | "create" | "delete" | "load">("load");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const result = (await invoke("list_chapters", {
-        project_path: projectPath,
+        projectPath,
       })) as ChapterMeta[];
       const next = (result || []).slice().sort((a, b) => a.order - b.order);
       setChapters(next);
-      window.dispatchEvent(
-        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
-      );
       const stored = localStorage.getItem(currentChapterStorageKey(projectPath));
       const storedValid = stored && next.some((c) => c.id === stored);
       const fallbackId = next[0]?.id ?? null;
       setCurrentChapterId((prev) => {
-        if (prev && next.some((c) => c.id === prev)) return prev;
-        return storedValid ? stored : fallbackId;
+        const resolved = prev && next.some((c) => c.id === prev) ? prev : storedValid ? stored : fallbackId;
+        if (resolved !== prev) selectionCauseRef.current = "load";
+        return resolved;
       });
     } catch (error) {
       message.error(`加载章节失败: ${formatError(error)}`);
@@ -49,18 +48,42 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    void load();
   }, [projectPath]);
 
   useEffect(() => {
-    if (!currentChapterId) return;
-    localStorage.setItem(currentChapterStorageKey(projectPath), currentChapterId);
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    const onChaptersChanged = (event: Event) => {
+      const { detail } = event as CustomEvent<{ projectPath: string }>;
+      if (!detail || detail.projectPath !== projectPath) return;
+      void load();
+    };
+
+    window.addEventListener("creatorai:chaptersChanged", onChaptersChanged);
+    return () => window.removeEventListener("creatorai:chaptersChanged", onChaptersChanged);
+  }, [projectPath, load]);
+
+  useEffect(() => {
+    const key = currentChapterStorageKey(projectPath);
+    const cause = selectionCauseRef.current;
+    selectionCauseRef.current = "user";
+
+    if (!currentChapterId) {
+      localStorage.removeItem(key);
+      window.dispatchEvent(
+        new CustomEvent("creatorai:chapterSelected", {
+          detail: { projectPath, chapterId: null, cause },
+        }),
+      );
+      return;
+    }
+
+    localStorage.setItem(key, currentChapterId);
     window.dispatchEvent(
       new CustomEvent("creatorai:chapterSelected", {
-        detail: { projectPath, chapterId: currentChapterId },
+        detail: { projectPath, chapterId: currentChapterId, cause },
       }),
     );
   }, [currentChapterId, projectPath]);
@@ -75,16 +98,17 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
     setCreating(true);
     try {
       const created = (await invoke("create_chapter", {
-        project_path: projectPath,
+        projectPath,
         title,
       })) as ChapterMeta;
       message.success("章节已创建");
       setCreateOpen(false);
       setCreateTitle("");
       await load();
+      selectionCauseRef.current = "create";
       setCurrentChapterId(created.id);
       window.dispatchEvent(
-        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
+        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "create" } }),
       );
     } catch (error) {
       message.error(`创建失败: ${formatError(error)}`);
@@ -96,14 +120,14 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
   const handleRename = async (chapterId: string, newTitle: string) => {
     try {
       await invoke("rename_chapter", {
-        project_path: projectPath,
-        chapter_id: chapterId,
-        new_title: newTitle,
+        projectPath,
+        chapterId,
+        newTitle,
       });
       setChapters((prev) => prev.map((c) => (c.id === chapterId ? { ...c, title: newTitle } : c)));
       message.success("已重命名");
       window.dispatchEvent(
-        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
+        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "rename" } }),
       );
     } catch (error) {
       message.error(`重命名失败: ${formatError(error)}`);
@@ -113,19 +137,24 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
   const handleDelete = async (chapterId: string) => {
     try {
       await invoke("delete_chapter", {
-        project_path: projectPath,
-        chapter_id: chapterId,
+        projectPath,
+        chapterId,
       });
       message.success("已删除");
       setChapters((prev) => {
         const remaining = prev.filter((c) => c.id !== chapterId);
         setCurrentChapterId((prevId) =>
-          prevId === chapterId ? (remaining[0]?.id ?? null) : prevId,
+          prevId === chapterId
+            ? (() => {
+                selectionCauseRef.current = "delete";
+                return remaining[0]?.id ?? null;
+              })()
+            : prevId,
         );
         return remaining;
       });
       window.dispatchEvent(
-        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath } }),
+        new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "delete" } }),
       );
     } catch (error) {
       message.error(`删除失败: ${formatError(error)}`);
@@ -172,7 +201,10 @@ export default function ChapterList({ projectPath }: ChapterListProps) {
               key={chapter.id}
               chapter={chapter}
               isActive={chapter.id === currentChapterId}
-              onSelect={() => setCurrentChapterId(chapter.id)}
+              onSelect={() => {
+                selectionCauseRef.current = "user";
+                setCurrentChapterId(chapter.id);
+              }}
               onRename={(newTitle) => void handleRename(chapter.id, newTitle)}
               onDelete={() => void handleDelete(chapter.id)}
             />

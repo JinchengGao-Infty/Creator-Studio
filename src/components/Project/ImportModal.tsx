@@ -69,7 +69,7 @@ export default function ImportModal({ visible, projectPath, onCancel, onSuccess 
     setPreviewLoading(true);
     try {
       const result = (await invoke("preview_import_txt", {
-        file_path: path,
+        filePath: path,
         pattern: pat,
       })) as ChapterPreview[];
       setPreviews(result || []);
@@ -134,10 +134,10 @@ export default function ImportModal({ visible, projectPath, onCancel, onSuccess 
       });
 
       await invoke("import_txt", {
-        project_path: projectPath,
-        file_path: filePath,
+        projectPath,
+        filePath,
         pattern,
-        request_id: requestId,
+        requestId,
       });
 
       message.success(`成功导入 ${previews.length} 个章节`);

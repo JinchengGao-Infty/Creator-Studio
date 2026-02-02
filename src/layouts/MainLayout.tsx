@@ -1,14 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Button, Space, Typography } from "antd";
+import { Button, Space, Typography, message } from "antd";
 import { FolderOpenOutlined, PlusOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar } from "../components/ActivityBar";
 import { AIPanel } from "../components/AIPanel";
-import { Editor } from "../components/Editor";
+import { Editor, type EditorHandle } from "../components/Editor";
 import { Sidebar } from "../components/Sidebar";
 import { SettingsPanel } from "../components/Settings";
 import { StatusBar, type SaveStatus } from "../components/StatusBar";
 import type { Theme } from "../hooks/useTheme";
+import { countWords } from "../utils/wordCount";
+import { formatError } from "../utils/error";
 import "./main-layout.css";
 
 export type SidebarView = "chapters" | "settings";
@@ -50,12 +52,16 @@ export default function MainLayout({
   const [sidebarView, setSidebarView] = useState<SidebarView>("chapters");
   const [chapters, setChapters] = useState<ChapterMeta[]>([]);
   const [currentChapterId, setCurrentChapterId] = useState<string | null>(null);
+  const [chapterContent, setChapterContent] = useState("");
+  const [draftContent, setDraftContent] = useState("");
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
+  const editorRef = useRef<EditorHandle | null>(null);
+  const contentLoadTokenRef = useRef(0);
 
   const refreshChapters = useCallback(async () => {
     try {
       const result = (await invoke("list_chapters", {
-        project_path: projectPath,
+        projectPath,
       })) as ChapterMeta[];
       const next = (result || []).slice().sort((a, b) => a.order - b.order);
       setChapters(next);
@@ -74,15 +80,69 @@ export default function MainLayout({
     }
   }, [projectPath]);
 
+  const refreshCurrentChapterContent = useCallback(async () => {
+    const token = (contentLoadTokenRef.current += 1);
+    if (!currentChapterId) {
+      setChapterContent("");
+      setDraftContent("");
+      return;
+    }
+
+    try {
+      const content = (await invoke("get_chapter_content", {
+        projectPath,
+        chapterId: currentChapterId,
+      })) as string;
+      if (contentLoadTokenRef.current !== token) return;
+      setChapterContent(content ?? "");
+      setDraftContent(content ?? "");
+    } catch (error) {
+      if (contentLoadTokenRef.current !== token) return;
+      setChapterContent("");
+      setDraftContent("");
+      message.error(`加载章节内容失败: ${formatError(error)}`);
+    }
+  }, [projectPath, currentChapterId]);
+
   useEffect(() => {
     void refreshChapters();
   }, [refreshChapters]);
 
   useEffect(() => {
+    void refreshCurrentChapterContent();
+  }, [refreshCurrentChapterContent]);
+
+  useEffect(() => {
     const onSelected = (event: Event) => {
-      const { detail } = event as CustomEvent<{ projectPath: string; chapterId: string }>;
+      const { detail } = event as CustomEvent<{
+        projectPath: string;
+        chapterId: string | null;
+        cause?: "user" | "create" | "delete" | "load";
+      }>;
       if (!detail || detail.projectPath !== projectPath) return;
-      setCurrentChapterId(detail.chapterId);
+      if (detail.chapterId === currentChapterId) return;
+
+      const nextChapterId = detail.chapterId;
+      const cause = detail.cause ?? "user";
+
+      void (async () => {
+        if (!nextChapterId) {
+          setCurrentChapterId(null);
+          return;
+        }
+        if (cause !== "delete") {
+          const hasUnsaved = editorRef.current?.hasUnsavedChanges() ?? false;
+          if (hasUnsaved) {
+            const ok = await editorRef.current?.saveNow();
+            if (ok === false) {
+              message.error("切换章节前自动保存失败，请稍后重试。");
+              return;
+            }
+          }
+        }
+
+        setCurrentChapterId(nextChapterId);
+      })();
     };
 
     const onOpenSettings = (event: Event) => {
@@ -92,9 +152,12 @@ export default function MainLayout({
     };
 
     const onChaptersChanged = (event: Event) => {
-      const { detail } = event as CustomEvent<{ projectPath: string }>;
+      const { detail } = event as CustomEvent<{ projectPath: string; reason?: string }>;
       if (!detail || detail.projectPath !== projectPath) return;
       void refreshChapters();
+      if (detail.reason === "append" && saveStatus === "saved") {
+        void refreshCurrentChapterContent();
+      }
     };
 
     const onSaveStatus = (event: Event) => {
@@ -113,17 +176,43 @@ export default function MainLayout({
       window.removeEventListener("creatorai:chaptersChanged", onChaptersChanged);
       window.removeEventListener("creatorai:saveStatus", onSaveStatus);
     };
-  }, [projectPath, refreshChapters]);
-
-  const totalWordCount = useMemo(() => {
-    return chapters.reduce((sum, c) => sum + (c.wordCount || 0), 0);
-  }, [chapters]);
+  }, [
+    projectPath,
+    refreshChapters,
+    refreshCurrentChapterContent,
+    saveStatus,
+    currentChapterId,
+  ]);
 
   const chapterWordCount = useMemo(() => {
     if (!currentChapterId) return 0;
-    const current = chapters.find((c) => c.id === currentChapterId);
-    return current?.wordCount ?? 0;
+    return countWords(draftContent);
+  }, [currentChapterId, draftContent]);
+
+  const totalWordCount = useMemo(() => {
+    if (!currentChapterId) return chapters.reduce((sum, c) => sum + (c.wordCount || 0), 0);
+    return chapters.reduce((sum, c) => {
+      if (c.id === currentChapterId) return sum + chapterWordCount;
+      return sum + (c.wordCount || 0);
+    }, 0);
+  }, [chapters, currentChapterId, chapterWordCount]);
+
+  const chapterTitle = useMemo(() => {
+    if (!currentChapterId) return "未选择章节";
+    return chapters.find((c) => c.id === currentChapterId)?.title ?? currentChapterId;
   }, [chapters, currentChapterId]);
+
+  const handleSave = useCallback(
+    async (content: string) => {
+      if (!currentChapterId) return;
+      await invoke("save_chapter_content", {
+        projectPath,
+        chapterId: currentChapterId,
+        content,
+      });
+    },
+    [projectPath, currentChapterId],
+  );
 
   return (
     <div className="main-layout">
@@ -172,7 +261,15 @@ export default function MainLayout({
       </aside>
 
       <main className="editor-area">
-        <Editor />
+        <Editor
+          ref={editorRef}
+          projectPath={projectPath}
+          chapterId={currentChapterId}
+          chapterTitle={chapterTitle}
+          initialContent={chapterContent}
+          onChange={setDraftContent}
+          onSave={handleSave}
+        />
       </main>
 
       <aside className="ai-panel">
