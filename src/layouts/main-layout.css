@@ -1,6 +1,12 @@
 .main-layout {
   display: grid;
-  grid-template-columns: 48px 240px 1fr 360px;
+  grid-template-columns:
+    48px
+    var(--sidebar-width, 240px)
+    6px
+    1fr
+    6px
+    var(--ai-panel-width, 360px);
   grid-template-rows: 1fr 28px;
   height: 100vh;
   background: var(--bg-primary);
@@ -20,6 +26,53 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+.sidebar.collapsed {
+  display: none;
+}
+
+.panel-resizer {
+  grid-row: 1;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border);
+  opacity: 0;
+  transform: translateX(-0.5px);
+  transition: opacity 0.12s ease;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer.dragging::after {
+  opacity: 1;
+}
+
+.panel-resizer.dragging {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+:root[data-theme="dark"] .panel-resizer.dragging {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.panel-resizer.sidebar-resizer {
+  grid-column: 3;
+}
+
+.panel-resizer.ai-resizer {
+  grid-column: 5;
 }
 
 .sidebar-header {
@@ -49,7 +102,7 @@
 }
 
 .editor-area {
-  grid-column: 3;
+  grid-column: 4;
   grid-row: 1;
   min-width: 0;
   background: var(--bg-primary);
@@ -57,12 +110,16 @@
 }
 
 .ai-panel {
-  grid-column: 4;
+  grid-column: 6;
   grid-row: 1;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border);
   display: flex;
   min-width: 0;
+}
+
+.ai-panel.collapsed {
+  display: none;
 }
 
 .status-bar-container {
