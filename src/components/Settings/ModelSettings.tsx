@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Card, Form, InputNumber, Select, Slider, message } from "antd";
+import { formatError } from "../../utils/error";
 
 interface ModelParameters {
   model: string;
@@ -51,7 +52,7 @@ export default function ModelSettings() {
         max_tokens: config.default_parameters.max_tokens,
       });
     } catch (error) {
-      message.error(`加载失败: ${String(error)}`);
+      message.error(`加载失败: ${formatError(error)}`);
     } finally {
       setLoading(false);
     }
@@ -71,7 +72,7 @@ export default function ModelSettings() {
         form.setFieldsValue({ model: undefined });
       }
     } catch (error) {
-      message.error(`切换失败: ${String(error)}`);
+      message.error(`切换失败: ${formatError(error)}`);
     }
   };
 
@@ -84,7 +85,7 @@ export default function ModelSettings() {
       await invoke("set_default_parameters", { parameters: values });
       message.success("保存成功");
     } catch (error) {
-      message.error(`保存失败: ${String(error)}`);
+      message.error(`保存失败: ${formatError(error)}`);
     }
   };
 

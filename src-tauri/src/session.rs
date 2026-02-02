@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+use crate::{config, keyring_store};
 use crate::security::validate_path;
+use crate::write_protection;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Session {
@@ -152,6 +154,13 @@ fn serialize_json_pretty<T: Serialize>(value: &T) -> Result<String, String> {
     Ok(format!("{json}\n"))
 }
 
+fn estimate_tokens(messages: &[Message]) -> u32 {
+    let total_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+    let base = (total_chars + 3) / 4;
+    let overhead = messages.len().saturating_mul(4);
+    (base + overhead) as u32
+}
+
 fn read_sessions_index(project_root: &Path) -> Result<SessionIndex, String> {
     let path = sessions_index_path(project_root)?;
     if !path.exists() {
@@ -168,7 +177,10 @@ fn write_sessions_index(project_root: &Path, index: &SessionIndex) -> Result<(),
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
     }
     let content = serialize_json_pretty(index)?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write sessions/index.json: {e}"))?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    write_protection::write_string_with_backup(&project_root, &path, &content)?;
     Ok(())
 }
 
@@ -195,7 +207,10 @@ fn write_session_file(
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
     }
     let content = serialize_json_pretty(file)?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write session file: {e}"))?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    write_protection::write_string_with_backup(&project_root, &path, &content)?;
     Ok(())
 }
 
@@ -232,6 +247,9 @@ fn list_sessions_sync(project_path: String) -> Result<Vec<Session>, String> {
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let mut index = read_sessions_index(&project_root)?;
     index
@@ -252,6 +270,9 @@ fn create_session_sync(
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let mut index = read_sessions_index(&project_root)?;
     let now = now_unix_seconds()?;
@@ -297,6 +318,9 @@ fn rename_session_sync(
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let id = normalize_session_id(&session_id)?;
     let mut index = read_sessions_index(&project_root)?;
@@ -334,6 +358,9 @@ fn delete_session_sync(project_path: String, session_id: String) -> Result<(), S
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let id = normalize_session_id(&session_id)?;
     let mut index = read_sessions_index(&project_root)?;
@@ -394,6 +421,9 @@ fn get_session_messages_sync(
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let id = normalize_session_id(&session_id)?;
     let file = read_session_file(&project_root, &id)?;
@@ -413,6 +443,9 @@ fn add_message_sync(
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let id = normalize_session_id(&session_id)?;
     let mut index = read_sessions_index(&project_root)?;
@@ -463,6 +496,9 @@ fn update_message_metadata_sync(
 
     let project_root = PathBuf::from(project_path);
     ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let id = normalize_session_id(&session_id)?;
     let mut index = read_sessions_index(&project_root)?;
@@ -515,6 +551,135 @@ fn update_message_metadata_sync(
     }
 
     Ok(updated_message)
+}
+
+fn compact_session_sync(project_path: String, session_id: String, keep_recent: u32) -> Result<(), String> {
+    let _guard = fs_lock()
+        .lock()
+        .map_err(|_| "Failed to lock sessions storage".to_string())?;
+
+    let project_root = PathBuf::from(project_path);
+    ensure_project_exists(&project_root)?;
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+
+    let id = normalize_session_id(&session_id)?;
+    let mut index = read_sessions_index(&project_root)?;
+    let Some(pos) = index.sessions.iter().position(|s| s.id == id) else {
+        return Err("Session not found".to_string());
+    };
+
+    let mut file = read_session_file(&project_root, &id)?;
+
+    let keep_recent = keep_recent.max(1) as usize;
+    if file.messages.len() <= keep_recent {
+        return Ok(());
+    }
+
+    let split_at = file.messages.len().saturating_sub(keep_recent);
+    let to_summarize = file.messages[..split_at].to_vec();
+    let keep = file.messages[split_at..].to_vec();
+
+    if to_summarize.is_empty() {
+        return Ok(());
+    }
+
+    // Avoid compacting very small histories.
+    if estimate_tokens(&to_summarize) < 512 {
+        return Ok(());
+    }
+
+    let cfg = config::load_config()?;
+    let provider_id = cfg
+        .active_provider_id
+        .ok_or("No active provider configured".to_string())?;
+    let provider = cfg
+        .providers
+        .iter()
+        .find(|p| p.id == provider_id)
+        .ok_or("Active provider not found".to_string())?;
+
+    let api_key = keyring_store::get_api_key(&provider_id)?
+        .ok_or("API Key not found for active provider".to_string())?;
+
+    let provider_type = match &provider.provider_type {
+        config::ProviderType::OpenaiCompatible => "openai-compatible",
+        config::ProviderType::Google => "google",
+        config::ProviderType::Anthropic => "anthropic",
+    };
+
+    let provider_json = json!({
+        "id": provider.id.clone(),
+        "name": provider.name.clone(),
+        "baseURL": provider.base_url.clone(),
+        "apiKey": api_key,
+        "models": provider.models.clone(),
+        "providerType": provider_type,
+        "headers": provider.headers.clone(),
+    });
+
+    let parameters_json = json!({
+        "model": cfg.default_parameters.model.clone(),
+        "temperature": cfg.default_parameters.temperature,
+        "topP": cfg.default_parameters.top_p,
+        "topK": cfg.default_parameters.top_k,
+        "maxTokens": cfg.default_parameters.max_tokens,
+    });
+
+    let messages_json = to_summarize
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::System => "system",
+            };
+            json!({
+                "role": role,
+                "content": m.content.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let summary = crate::ai_bridge::generate_compact_summary(provider_json, parameters_json, messages_json)?;
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Err("Compact summary is empty".to_string());
+    }
+
+    let now = now_unix_seconds()?;
+    let summary_message = Message {
+        id: Uuid::new_v4().to_string(),
+        role: MessageRole::System,
+        content: format!("[系统摘要]\n\n{summary}"),
+        timestamp: now,
+        metadata: None,
+    };
+
+    let old_index_content = serialize_json_pretty(&index)?;
+    let old_file_content = serialize_json_pretty(&file)?;
+
+    file.messages = {
+        let mut next = Vec::with_capacity(1 + keep.len());
+        next.push(summary_message);
+        next.extend(keep);
+        next
+    };
+
+    file.session.updated_at = now;
+    index.sessions[pos].updated_at = now;
+
+    write_session_file(&project_root, &id, &file)?;
+    if let Err(e) = write_sessions_index(&project_root, &index) {
+        let index_path = sessions_index_path(&project_root)?;
+        let session_path = session_file_path(&project_root, &id)?;
+        let _ = fs::write(&session_path, old_file_content);
+        let _ = fs::write(&index_path, old_index_content);
+        return Err(e);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -597,4 +762,15 @@ pub async fn update_message_metadata(
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn compact_session(
+    project_path: String,
+    session_id: String,
+    keep_recent: u32,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || compact_session_sync(project_path, session_id, keep_recent))
+        .await
+        .map_err(|e| format!("Task join error: {e}"))?
 }

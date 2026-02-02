@@ -3,6 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::write_protection;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
@@ -91,7 +93,11 @@ fn write_json_pretty_create_new<T: Serialize>(path: &Path, value: &T) -> Result<
     Ok(())
 }
 
-fn write_json_pretty_overwrite<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+fn write_json_pretty_overwrite<T: Serialize>(
+    project_root: &Path,
+    path: &Path,
+    value: &T,
+) -> Result<(), String> {
     let content =
         serde_json::to_string_pretty(value).map_err(|e| format!("Serialize JSON failed: {e}"))?;
 
@@ -99,8 +105,7 @@ fn write_json_pretty_overwrite<T: Serialize>(path: &Path, value: &T) -> Result<(
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
     }
 
-    fs::write(path, format!("{content}\n"))
-        .map_err(|e| format!("Failed to write '{}': {e}", path.display()))?;
+    write_protection::write_string_with_backup(project_root, path, &format!("{content}\n"))?;
     Ok(())
 }
 
@@ -204,6 +209,9 @@ fn save_project_config_sync(path: String, mut config: ProjectConfig) -> Result<(
     if !project_root.exists() {
         return Err("Project path does not exist".to_string());
     }
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
 
     let cfg_path = config_path(&project_root);
     if !cfg_path.exists() {
@@ -211,7 +219,7 @@ fn save_project_config_sync(path: String, mut config: ProjectConfig) -> Result<(
     }
 
     config.updated = now_unix_seconds()?;
-    write_json_pretty_overwrite(&cfg_path, &config)?;
+    write_json_pretty_overwrite(&project_root, &cfg_path, &config)?;
     Ok(())
 }
 

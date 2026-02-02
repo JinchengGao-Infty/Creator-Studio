@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { message } from "antd";
+import { ConfigProvider, message, theme as antdTheme } from "antd";
 import { CreateProjectModal, type RecentProject, WelcomePage } from "./components/Project";
 import { useTheme } from "./hooks/useTheme";
 import MainLayout from "./layouts/MainLayout";
+import { formatError } from "./utils/error";
 
 interface ProjectSettings {
   autoSave: boolean;
@@ -48,6 +49,28 @@ export default function App() {
     void loadRecentProjects();
   }, []);
 
+  useEffect(() => {
+    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+      // eslint-disable-next-line no-console
+      console.error("Unhandled promise rejection:", event.reason);
+      message.error(`发生未处理异常：${formatError(event.reason)}`);
+    };
+
+    const onError = (event: ErrorEvent) => {
+      if (!event.error && !event.message) return;
+      // eslint-disable-next-line no-console
+      console.error("Uncaught error:", event.error ?? event.message);
+      message.error(`发生错误：${formatError(event.error ?? event.message)}`);
+    };
+
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    window.addEventListener("error", onError);
+    return () => {
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+      window.removeEventListener("error", onError);
+    };
+  }, []);
+
   const openProject = async (path: string) => {
     if (!path.trim()) return;
 
@@ -60,7 +83,7 @@ export default function App() {
       await loadRecentProjects();
       message.success({ content: `已打开项目：${config.name}`, key: "project" });
     } catch (error) {
-      message.error({ content: `打开失败: ${String(error)}`, key: "project" });
+      message.error({ content: `打开失败: ${formatError(error)}`, key: "project" });
     } finally {
       setProjectBusy(false);
     }
@@ -77,7 +100,7 @@ export default function App() {
         await openProject(selected);
       }
     } catch (error) {
-      message.error(`打开失败: ${String(error)}`);
+      message.error(`打开失败: ${formatError(error)}`);
     }
   };
 
@@ -102,7 +125,7 @@ export default function App() {
       setCreateProjectModalOpen(false);
       message.success({ content: `项目已创建：${config.name}`, key: "project" });
     } catch (error) {
-      message.error({ content: `创建失败: ${String(error)}`, key: "project" });
+      message.error({ content: `创建失败: ${formatError(error)}`, key: "project" });
     } finally {
       setProjectBusy(false);
     }
@@ -112,41 +135,91 @@ export default function App() {
     setCurrentProject(null);
   };
 
-  if (!currentProject) {
-    return (
-      <>
-        <WelcomePage
-          onCreateProject={() => setCreateProjectModalOpen(true)}
-          onOpenProject={() => void handleOpenProjectDialog()}
-          recentProjects={recentProjects}
-          onOpenRecent={(path) => void openProject(path)}
-        />
-        <CreateProjectModal
-          visible={createProjectModalOpen}
-          onCancel={() => setCreateProjectModalOpen(false)}
-          onCreate={(name, parentPath) => void createProject(name, parentPath)}
-        />
-      </>
-    );
-  }
+  const antdThemeConfig = useMemo(() => {
+    const tokens =
+      theme === "dark"
+        ? {
+            colorBgBase: "#1a1a1a",
+            colorBgContainer: "#242424",
+            colorBgElevated: "#242424",
+            colorBorder: "#3a3a3a",
+            colorText: "#e8e8e8",
+            colorTextSecondary: "#a0a0a0",
+            colorTextTertiary: "#666666",
+            colorPrimary: "#c9a66b",
+            colorPrimaryHover: "#d4b896",
+            colorLink: "#c9a66b",
+            colorLinkHover: "#d4b896",
+            borderRadius: 10,
+          }
+        : {
+            colorBgBase: "#fffff0",
+            colorBgContainer: "#fafaf5",
+            colorBgElevated: "#fafaf5",
+            colorBorder: "#e8e8d8",
+            colorText: "#333333",
+            colorTextSecondary: "#666666",
+            colorTextTertiary: "#999999",
+            colorPrimary: "#8b7355",
+            colorPrimaryHover: "#d4a574",
+            colorLink: "#8b7355",
+            colorLinkHover: "#d4a574",
+            borderRadius: 10,
+          };
+
+    return {
+      algorithm: theme === "dark" ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+      token: tokens,
+      components: {
+        Layout: {
+          bodyBg: tokens.colorBgBase,
+          headerBg: tokens.colorBgContainer,
+          footerBg: tokens.colorBgContainer,
+          siderBg: tokens.colorBgContainer,
+        },
+        Tooltip: {
+          colorBgSpotlight: tokens.colorBgElevated,
+          colorTextLightSolid: tokens.colorText,
+        },
+      },
+    };
+  }, [theme]);
 
   return (
-    <>
-      <MainLayout
-        projectPath={currentProject.path}
-        projectName={currentProject.config.name}
-        projectBusy={projectBusy}
-        theme={theme}
-        onToggleTheme={toggle}
-        onCreateProject={() => setCreateProjectModalOpen(true)}
-        onOpenProject={() => void handleOpenProjectDialog()}
-        onCloseProject={closeProject}
-      />
-      <CreateProjectModal
-        visible={createProjectModalOpen}
-        onCancel={() => setCreateProjectModalOpen(false)}
-        onCreate={(name, parentPath) => void createProject(name, parentPath)}
-      />
-    </>
+    <ConfigProvider theme={antdThemeConfig}>
+      {currentProject ? (
+        <>
+          <MainLayout
+            projectPath={currentProject.path}
+            projectName={currentProject.config.name}
+            projectBusy={projectBusy}
+            theme={theme}
+            onToggleTheme={toggle}
+            onCreateProject={() => setCreateProjectModalOpen(true)}
+            onOpenProject={() => void handleOpenProjectDialog()}
+            onCloseProject={closeProject}
+          />
+          <CreateProjectModal
+            visible={createProjectModalOpen}
+            onCancel={() => setCreateProjectModalOpen(false)}
+            onCreate={(name, parentPath) => void createProject(name, parentPath)}
+          />
+        </>
+      ) : (
+        <>
+          <WelcomePage
+            onCreateProject={() => setCreateProjectModalOpen(true)}
+            onOpenProject={() => void handleOpenProjectDialog()}
+            recentProjects={recentProjects}
+            onOpenRecent={(path) => void openProject(path)}
+          />
+          <CreateProjectModal
+            visible={createProjectModalOpen}
+            onCancel={() => setCreateProjectModalOpen(false)}
+            onCreate={(name, parentPath) => void createProject(name, parentPath)}
+          />
+        </>
+      )}
+    </ConfigProvider>
   );
 }

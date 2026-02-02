@@ -163,6 +163,67 @@ pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String
     }
 }
 
+pub fn generate_compact_summary(
+    provider: Value,
+    parameters: Value,
+    messages: Vec<Value>,
+) -> Result<String, String> {
+    let repo_root = get_repo_root_dir()?;
+    let ai_engine_path = get_ai_engine_cli_path()?;
+
+    let mut child = Command::new("bun")
+        .arg("run")
+        .arg(&ai_engine_path)
+        .current_dir(&repo_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))?;
+
+    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut reader = BufReader::new(stdout);
+
+    let request = json!({
+        "type": "compact",
+        "provider": provider,
+        "parameters": parameters,
+        "messages": messages,
+    });
+
+    writeln!(stdin, "{}", request.to_string())
+        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+    drop(stdin);
+
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("Failed to read from stdout: {e}"))?;
+
+    let response: Value = serde_json::from_str(&line)
+        .map_err(|e| format!("Failed to parse response: {e}. line={line:?}"))?;
+
+    match response["type"].as_str() {
+        Some("compact_summary") => {
+            let content = response["content"].as_str().unwrap_or("").to_string();
+            let _ = child.wait();
+            Ok(content)
+        }
+        Some("error") => {
+            let _ = child.wait();
+            Err(response["message"].as_str().unwrap_or("Unknown error").to_string())
+        }
+        _ => {
+            let _ = child.wait();
+            Err(format!("Unknown response: {line}"))
+        }
+    }
+}
+
 pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
     run_chat_with_events(request, None)
 }

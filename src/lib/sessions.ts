@@ -113,3 +113,15 @@ export async function deleteSession(params: {
     session_id: params.sessionId,
   });
 }
+
+export async function compactSession(params: {
+  projectPath: string;
+  sessionId: string;
+  keepRecent: number;
+}): Promise<void> {
+  await invoke("compact_session", {
+    project_path: params.projectPath,
+    session_id: params.sessionId,
+    keep_recent: params.keepRecent,
+  });
+}

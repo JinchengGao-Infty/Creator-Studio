@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Input, List, Modal, Progress, Select, message } from "antd";
+import { formatError } from "../../utils/error";
 
 interface ChapterPreview {
   title: string;
@@ -74,7 +75,7 @@ export default function ImportModal({ visible, projectPath, onCancel, onSuccess 
       setPreviews(result || []);
     } catch (error) {
       setPreviews([]);
-      message.error(`预览失败: ${String(error)}`);
+      message.error(`预览失败: ${formatError(error)}`);
     } finally {
       setPreviewLoading(false);
     }
@@ -100,7 +101,7 @@ export default function ImportModal({ visible, projectPath, onCancel, onSuccess 
         await runPreview(selected, pattern);
       }
     } catch (error) {
-      message.error(`选择失败: ${String(error)}`);
+      message.error(`选择失败: ${formatError(error)}`);
     }
   };
 
@@ -142,7 +143,7 @@ export default function ImportModal({ visible, projectPath, onCancel, onSuccess 
       message.success(`成功导入 ${previews.length} 个章节`);
       onSuccess();
     } catch (error) {
-      message.error(`导入失败: ${String(error)}`);
+      message.error(`导入失败: ${formatError(error)}`);
     } finally {
       requestIdRef.current = null;
       setImporting(false);

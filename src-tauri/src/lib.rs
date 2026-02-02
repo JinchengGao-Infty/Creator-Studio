@@ -11,6 +11,7 @@ mod recent_projects;
 mod security;
 mod session;
 mod summary;
+mod write_protection;
 
 use chapter::{
     create_chapter, delete_chapter, get_chapter_content, list_chapters, rename_chapter,
@@ -27,7 +28,7 @@ use project::{create_project, get_project_info, open_project, save_project_confi
 use recent_projects::{add_recent_project, get_recent_projects};
 use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
-    rename_session, update_message_metadata,
+    rename_session, update_message_metadata, compact_session,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -314,6 +315,7 @@ pub fn run() {
             get_session_messages,
             add_message,
             update_message_metadata,
+            compact_session,
             preview_import_txt,
             import_txt
         ])

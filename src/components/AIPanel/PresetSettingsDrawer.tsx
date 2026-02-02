@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { WritingPreset } from "../../types/writingPreset";
 import { createDefaultWritingPreset } from "../../types/writingPreset";
 import PresetForm from "./PresetForm";
+import { formatError } from "../../utils/error";
 
 interface PresetSettingsDrawerProps {
   open: boolean;
@@ -118,7 +119,7 @@ export default function PresetSettingsDrawer({
       await Promise.resolve(onSave(normalized, active));
       setDirty(false);
     } catch (error) {
-      message.error(`保存写作预设失败: ${String(error)}`);
+      message.error(`保存写作预设失败: ${formatError(error)}`);
     } finally {
       setSaving(false);
     }

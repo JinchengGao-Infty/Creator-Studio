@@ -14,6 +14,7 @@ import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
   addSessionMessage,
   createSession,
+  compactSession,
   getSessionMessages,
   listSessions,
   updateMessageMetadata,
@@ -21,6 +22,7 @@ import {
   type Session,
   type SessionMode,
 } from "../../lib/sessions";
+import { formatError } from "../../utils/error";
 import { countWords } from "../../utils/wordCount";
 import type { PanelMessage, ToolCall } from "./types";
 import "./ai-panel.css";
@@ -73,6 +75,18 @@ function toPanelMessage(msg: { id: string; role: string; content: string; timest
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+const COMPACT_CONFIG = {
+  maxTokens: 8000,
+  compactThreshold: 0.8,
+  keepRecent: 5,
+} as const;
+
+function estimateTokensForMessages(messages: Array<{ content: string }>): number {
+  const chars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+  // Very rough estimate: 1 token ≈ 4 chars, plus small per-message overhead.
+  return Math.ceil(chars / 4) + messages.length * 4;
 }
 
 function openSettings(projectPath: string) {
@@ -222,7 +236,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         setActivePresetId(result.activePresetId);
       } catch (error) {
         if (cancelled) return;
-        message.error(`加载写作预设失败: ${String(error)}`);
+        message.error(`加载写作预设失败: ${formatError(error)}`);
         const fallback = createDefaultWritingPreset();
         setPresets([fallback]);
         setActivePresetId(fallback.id);
@@ -268,7 +282,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         const selected = next.find((s) => s.id === selectedId);
         setMode(selected?.mode ?? defaultMode());
       } catch (error) {
-        message.error(`加载会话失败: ${String(error)}`);
+        message.error(`加载会话失败: ${formatError(error)}`);
         setSessions([]);
         setCurrentSessionId(null);
         setMode(defaultMode());
@@ -380,7 +394,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         setMessagesInSession(msgs.map(toPanelMessage));
       } catch (error) {
         if (cancelled) return;
-        message.error(`加载消息失败: ${String(error)}`);
+        message.error(`加载消息失败: ${formatError(error)}`);
         setMessagesInSession([]);
       } finally {
         if (!cancelled) setLoadingMessages(false);
@@ -437,7 +451,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         selectSession(created.id);
       })
       .catch((error) => {
-        message.error(`创建会话失败: ${String(error)}`);
+        message.error(`创建会话失败: ${formatError(error)}`);
       })
       .finally(() => {
         setLoadingSessions(false);
@@ -471,7 +485,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         selectSession(created.id);
       })
       .catch((error) => {
-        message.error(`创建会话失败: ${String(error)}`);
+        message.error(`创建会话失败: ${formatError(error)}`);
       })
       .finally(() => {
         setLoadingSessions(false);
@@ -544,10 +558,35 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       const uiUser = toPanelMessage(createdUser);
       setMessagesInSession((prev) => [...prev, uiUser]);
 
-      const messagesForAi: ChatMessage[] = [...messagesInSession, uiUser]
-        .filter((m) => m.role !== "system")
-        .slice(-20)
-        .map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
+      let workingMessages: PanelMessage[] = [...messagesInSession, uiUser];
+      const compactThreshold = COMPACT_CONFIG.maxTokens * COMPACT_CONFIG.compactThreshold;
+
+      if (estimateTokensForMessages(workingMessages) > compactThreshold) {
+        message.loading({ content: "正在压缩上下文...", key: "compact", duration: 0 });
+        try {
+          await compactSession({
+            projectPath,
+            sessionId: currentSession.id,
+            keepRecent: COMPACT_CONFIG.keepRecent,
+          });
+          const compacted = await getSessionMessages({ projectPath, sessionId: currentSession.id });
+          workingMessages = compacted.map(toPanelMessage);
+          setMessagesInSession(workingMessages);
+          if (estimateTokensForMessages(workingMessages) > compactThreshold) {
+            workingMessages = workingMessages.slice(-20);
+          }
+        } catch (error) {
+          message.error(`压缩上下文失败: ${formatError(error)}`);
+          workingMessages = workingMessages.slice(-20);
+        } finally {
+          message.destroy("compact");
+        }
+      }
+
+      const messagesForAi: ChatMessage[] = workingMessages.map((m) => ({
+        role: m.role as ChatMessage["role"],
+        content: m.content,
+      }));
 
       const systemPrompt =
         mode === "Continue" && resolved
@@ -638,8 +677,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       const refreshed = await listSessions(projectPath);
       setSessions(refreshed);
     } catch (error) {
-      const text = String(error);
-      if (text.includes("Provider")) setConfigMissing(true);
+      const text = formatError(error);
+      if (text.includes("请先在设置") || text.includes("Provider") || text.includes("模型")) {
+        setConfigMissing(true);
+      }
       message.error(`发送失败: ${text}`);
     } finally {
       setLoading(false);
@@ -689,7 +730,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     setSavingPresets(true);
     void saveWritingPresets({ projectPath, presets, activePresetId: presetId })
       .catch((error) => {
-        message.error(`保存当前预设失败: ${String(error)}`);
+        message.error(`保存当前预设失败: ${formatError(error)}`);
         setActivePresetId(previous);
       })
       .finally(() => {

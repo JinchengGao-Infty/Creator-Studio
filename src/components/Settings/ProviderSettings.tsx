@@ -20,6 +20,7 @@ import {
   PlusOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
+import { formatError } from "../../utils/error";
 
 interface Provider {
   id: string;
@@ -56,7 +57,7 @@ export default function ProviderSettings() {
       setProviders(config.providers || []);
       setActiveProviderId(config.active_provider_id ?? null);
     } catch (error) {
-      message.error(`加载失败: ${String(error)}`);
+      message.error(`加载失败: ${formatError(error)}`);
     } finally {
       setLoading(false);
     }
@@ -115,7 +116,7 @@ export default function ProviderSettings() {
       setEditingProvider(null);
       void loadProviders();
     } catch (error) {
-      message.error(`操作失败: ${String(error)}`);
+      message.error(`操作失败: ${formatError(error)}`);
     }
   };
 
@@ -125,7 +126,7 @@ export default function ProviderSettings() {
       message.success("删除成功");
       void loadProviders();
     } catch (error) {
-      message.error(`删除失败: ${String(error)}`);
+      message.error(`删除失败: ${formatError(error)}`);
     }
   };
 
@@ -135,7 +136,7 @@ export default function ProviderSettings() {
       message.success("已设置为当前 Provider");
       void loadProviders();
     } catch (error) {
-      message.error(`设置失败: ${String(error)}`);
+      message.error(`设置失败: ${formatError(error)}`);
     }
   };
 
@@ -151,7 +152,7 @@ export default function ProviderSettings() {
       });
       void loadProviders();
     } catch (error) {
-      message.error({ content: `获取失败: ${String(error)}`, key: "refresh" });
+      message.error({ content: `获取失败: ${formatError(error)}`, key: "refresh" });
     }
   };
 
