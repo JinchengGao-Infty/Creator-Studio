@@ -1,6 +1,20 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { ProviderConfig } from './types'
 
+function buildAuthHeaders(providerType: ProviderConfig['providerType'], apiKey: string) {
+  const key = apiKey ?? ''
+  if (!key) return {}
+
+  switch (providerType) {
+    case 'google':
+      return { 'x-goog-api-key': key }
+    case 'anthropic':
+      return { 'x-api-key': key }
+    default:
+      return {}
+  }
+}
+
 export class ProviderManager {
   private providers: Map<string, ProviderConfig> = new Map()
 
@@ -26,14 +40,18 @@ export class ProviderManager {
       throw new Error(`Provider not found: ${providerId}`)
     }
 
-    if (provider.providerType !== 'openai-compatible') {
-      throw new Error(`Provider type not supported: ${provider.providerType}`)
-    }
+    // We use the OpenAI-compatible protocol for all providers here,
+    // but some providers expect different auth headers.
+    const authHeaders = buildAuthHeaders(provider.providerType, provider.apiKey)
+    const mergedHeaders = { ...authHeaders, ...(provider.headers ?? {}) }
 
     return createOpenAICompatible({
       baseURL: provider.baseURL,
-      apiKey: provider.apiKey,
-      headers: provider.headers,
+      name: provider.name,
+      // For Google/Anthropic, omit apiKey to avoid sending `Authorization: Bearer ...`
+      // (some gateways treat Bearer tokens differently and may require browser verification).
+      apiKey: provider.providerType === 'openai-compatible' ? provider.apiKey : undefined,
+      headers: mergedHeaders,
     })
   }
 }

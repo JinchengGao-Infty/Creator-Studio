@@ -25,6 +25,7 @@ type FetchModelsInput = {
   type: 'fetch_models'
   baseURL: string
   apiKey: string
+  providerType?: ProviderConfig['providerType']
 }
 
 type CompactInput = {
@@ -83,7 +84,7 @@ async function main() {
 
   if (input.type === 'fetch_models') {
     try {
-      const models = await fetchModels(input.baseURL, input.apiKey)
+      const models = await fetchModels(input.baseURL, input.apiKey, input.providerType ?? 'openai-compatible')
       writeJson({ type: 'models', models })
     } catch (error) {
       writeJson({ type: 'error', message: error instanceof Error ? error.message : String(error) })

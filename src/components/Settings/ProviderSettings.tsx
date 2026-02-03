@@ -383,12 +383,21 @@ export default function ProviderSettings() {
             />
           </Form.Item>
           <Form.Item name="provider_type" label="Provider 类型" initialValue="openai-compatible">
-            <Select>
-              <Select.Option value="openai-compatible">OpenAI Compatible</Select.Option>
-              <Select.Option value="google">Google</Select.Option>
-              <Select.Option value="anthropic">Anthropic</Select.Option>
-            </Select>
+            <Select
+              options={[
+                { value: "openai-compatible", label: "OpenAI Compatible（Authorization: Bearer）" },
+                { value: "google", label: "Google（x-goog-api-key）" },
+                { value: "anthropic", label: "Anthropic（x-api-key）" },
+              ]}
+            />
           </Form.Item>
+          <div style={{ marginTop: -10, marginBottom: 10, color: "var(--text-muted)", fontSize: 12 }}>
+            提示：有些 OpenAI 兼容网关并不接受 Bearer 方式（例如需要{" "}
+            <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>
+              x-goog-api-key
+            </span>
+            ），这时请选择对应类型。
+          </div>
         </Form>
       </Modal>
     </Card>

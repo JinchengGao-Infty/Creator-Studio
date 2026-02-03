@@ -9,6 +9,20 @@ export interface ModelsResponse {
   object: string
 }
 
+function authHeaders(providerType: string, apiKey: string): Record<string, string> {
+  const key = apiKey ?? ''
+  if (!key) return {}
+
+  switch (providerType) {
+    case 'google':
+      return { 'x-goog-api-key': key }
+    case 'anthropic':
+      return { 'x-api-key': key }
+    default:
+      return { Authorization: `Bearer ${key}` }
+  }
+}
+
 function joinURL(baseURL: string, path: string): string {
   const normalizedBase = baseURL.replace(/\/+$/, '')
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
@@ -25,13 +39,13 @@ function uniqueSorted(items: string[]): string[] {
   return Array.from(new Set(items.filter((m) => m && m.trim()).map((m) => m.trim()))).sort()
 }
 
-async function fetchModelsOnce(baseURL: string, apiKey: string): Promise<string[]> {
+async function fetchModelsOnce(baseURL: string, apiKey: string, providerType: string): Promise<string[]> {
   const url = joinURL(baseURL, '/models')
 
   const response = await fetch(url, {
     method: 'GET',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      ...authHeaders(providerType, apiKey),
       'Content-Type': 'application/json',
     },
   })
@@ -44,17 +58,21 @@ async function fetchModelsOnce(baseURL: string, apiKey: string): Promise<string[
   return data.data.map((m) => m.id)
 }
 
-export async function fetchModels(baseURL: string, apiKey: string): Promise<string[]> {
+export async function fetchModels(
+  baseURL: string,
+  apiKey: string,
+  providerType: string = 'openai-compatible',
+): Promise<string[]> {
   const normalizedBaseURL = baseURL.trim()
   try {
-    return uniqueSorted(await fetchModelsOnce(normalizedBaseURL, apiKey))
+    return uniqueSorted(await fetchModelsOnce(normalizedBaseURL, apiKey, providerType))
   } catch (error) {
     // Fallback: users often input a host without `/v1`, but OpenAI-compatible APIs expect `/v1/models`.
     const message = error instanceof Error ? error.message : String(error)
     const trimmed = normalizedBaseURL.replace(/\/+$/, '')
     const hasV1 = trimmed.endsWith('/v1')
     if (message.includes('404') && !hasV1) {
-      return uniqueSorted(await fetchModelsOnce(ensureV1(normalizedBaseURL), apiKey))
+      return uniqueSorted(await fetchModelsOnce(ensureV1(normalizedBaseURL), apiKey, providerType))
     }
     throw error
   }

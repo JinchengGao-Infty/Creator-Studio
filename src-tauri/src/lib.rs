@@ -166,9 +166,15 @@ async fn refresh_provider_models(provider_id: String) -> Result<Vec<String>, Str
         .ok_or(format!("API Key not found for provider {}", provider_id))?;
 
     let base_url = provider.base_url.clone();
+    let provider_type = match provider.provider_type {
+        config::ProviderType::OpenaiCompatible => "openai-compatible",
+        config::ProviderType::Google => "google",
+        config::ProviderType::Anthropic => "anthropic",
+    }
+    .to_string();
     let api_key_for_task = api_key.clone();
     let models = tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::fetch_models(&base_url, &api_key_for_task)
+        ai_bridge::fetch_models(&provider_type, &base_url, &api_key_for_task)
     })
     .await
     .map_err(|e| format!("refresh_provider_models join error: {e}"))??;

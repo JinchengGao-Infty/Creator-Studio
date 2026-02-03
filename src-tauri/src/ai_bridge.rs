@@ -204,7 +204,11 @@ fn format_tool_runs(runs: &[ToolCall]) -> String {
     out.trim_end().to_string()
 }
 
-pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+pub fn fetch_models(
+    provider_type: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
     let ai_engine_path = get_ai_engine_path()?;
 
     let mut child = spawn_ai_engine(&ai_engine_path)?;
@@ -215,6 +219,7 @@ pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String
 
     let request = json!({
         "type": "fetch_models",
+        "providerType": provider_type,
         "baseURL": base_url,
         "apiKey": api_key,
     });
