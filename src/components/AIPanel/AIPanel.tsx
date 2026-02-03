@@ -137,6 +137,7 @@ function buildContinueSystemPrompt(params: {
 - list: 列出目录内容（需要时）
 - search: 搜索摘要获取前情
 - get_chapter_info: 获取当前章节信息（路径、字数等）
+- rag_search: 在知识库（knowledge/）中语义检索相关资料
 - append: 追加续写内容到章节末尾（仅在用户确认后）
 - save_summary: 保存本次续写的摘要（仅在用户确认后）
 
@@ -145,9 +146,10 @@ ${phaseHint}
 
 ## 工作流程（草稿阶段）
 1. 首先用 read 读取当前章节的最后部分（建议 offset: -2000）作为上下文
-2. 用 search 搜索 summaries.json 相关摘要，了解前情和人物关系
-3. 根据用户指令和上下文，生成续写内容（约 500-1000 字）
-4. 输出“续写预览”（只输出正文，不要把工具返回的 JSON 原样贴出来），等待用户确认
+2. 可用 rag_search 检索 knowledge/ 里的设定/人物/时间线资料
+3. 用 search 搜索 summaries.json 相关摘要，了解前情和人物关系
+4. 根据用户指令和上下文，生成续写内容（约 500-1000 字）
+5. 输出“续写预览”（只输出正文，不要把工具返回的 JSON 原样贴出来），等待用户确认
 
 ## 工作流程（应用阶段）
 1. 用户已确认后，调用 append 将“上一条续写预览原文”追加到章节文件末尾
@@ -189,6 +191,7 @@ function buildUnifiedSystemPrompt(params: {
 ## 工具（重要）
 - 可读工具：list / read / search / get_chapter_info
 - 写入工具：append / write / save_summary
+- RAG 工具：rag_search（从 knowledge/ 语义检索资料）
 
 写入工具只能在用户明确确认“确认追加”后使用；在未确认阶段严禁调用 append/write/save_summary。
 
@@ -202,8 +205,9 @@ function buildUnifiedSystemPrompt(params: {
 
 ## 续写草稿阶段（默认）
 1. 先用 read 读取当前章节最后部分作为上下文（建议 offset: -2000）
-2. 用 search 搜索 summaries.json 相关摘要，确保前后连贯
-3. 输出 500-1000 字的“正文续写预览”
+2. 可用 rag_search 检索 knowledge/ 里的设定/人物/时间线资料
+3. 用 search 搜索 summaries.json 相关摘要，确保前后连贯
+4. 输出 500-1000 字的“正文续写预览”
 
 输出格式必须严格遵守（为了让前端识别草稿）：
 - 第一行：${CONTINUE_DRAFT_MARKER}

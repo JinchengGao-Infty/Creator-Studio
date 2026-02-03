@@ -86,6 +86,18 @@ export const tools: ToolDefinition[] = [
       required: ['chapterId', 'summary'],
     },
   },
+  {
+    name: 'rag_search',
+    description: '在知识库（knowledge/）中进行语义检索，返回相关片段用于写作参考。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '检索问题/关键词' },
+        topK: { type: 'number', description: '返回条数（默认 5）' },
+      },
+      required: ['query'],
+    },
+  },
 ]
 
 type ExecuteTools = (calls: ToolCallRequest[]) => Promise<ToolCallResult[]>
@@ -159,6 +171,11 @@ export function getToolsForSDK(executeTools?: ExecuteTools) {
       description: getToolDef('save_summary').description,
       parameters: jsonSchema(getToolDef('save_summary').parameters as any),
       execute: executeTools ? makeExecute('save_summary') : undefined,
+    }),
+    rag_search: tool({
+      description: getToolDef('rag_search').description,
+      parameters: jsonSchema(getToolDef('rag_search').parameters as any),
+      execute: executeTools ? makeExecute('rag_search') : undefined,
     }),
   }
 }

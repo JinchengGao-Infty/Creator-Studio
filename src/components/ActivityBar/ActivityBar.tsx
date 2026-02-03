@@ -1,5 +1,6 @@
 import { Tooltip } from "antd";
 import {
+  BookOutlined,
   FileTextOutlined,
   MoonOutlined,
   SettingOutlined,
@@ -25,6 +26,7 @@ export default function ActivityBar({
 }: ActivityBarProps) {
   const items: Array<{ key: SidebarView; label: string; icon: ReactNode }> = [
     { key: "chapters", label: "章节", icon: <FileTextOutlined /> },
+    { key: "knowledge", label: "知识库", icon: <BookOutlined /> },
     { key: "settings", label: "设置", icon: <SettingOutlined /> },
   ];
 

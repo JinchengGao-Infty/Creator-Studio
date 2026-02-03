@@ -117,3 +117,12 @@ pub fn write_string_with_backup(
     Ok(backup)
 }
 
+pub fn write_bytes_with_backup(
+    project_root: &Path,
+    full_path: &Path,
+    content: &[u8],
+) -> Result<Option<PathBuf>, String> {
+    let backup = backup_existing_file(project_root, full_path)?;
+    atomic_write_bytes(full_path, content, backup.as_deref())?;
+    Ok(backup)
+}

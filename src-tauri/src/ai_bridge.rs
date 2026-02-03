@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::file_ops::{append, list, read, search, write};
 use crate::project::ChapterIndex;
 use crate::session::{SessionMode, ToolCall, ToolCallStatus};
-use crate::{security::validate_path, summary};
+use crate::{rag, security::validate_path, summary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallStartEvent {
@@ -744,6 +744,14 @@ fn execute_tool(
                 summary_text.to_string(),
             )?;
             serde_json::to_string(&entry).map_err(|e| e.to_string())
+        }
+        "rag_search" => {
+            let query = args["query"].as_str().ok_or("Missing query")?;
+            let top_k = as_u32(&args["topK"])
+                .or_else(|| as_u32(&args["top_k"]))
+                .unwrap_or(5) as usize;
+            let hits = rag::search(project_root, query, top_k)?;
+            serde_json::to_string(&hits).map_err(|e| e.to_string())
         }
         _ => Err(format!("Unknown tool: {name}")),
     }

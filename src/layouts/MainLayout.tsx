@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityBar } from "../components/ActivityBar";
 import { AIPanel } from "../components/AIPanel";
 import { Editor, type EditorHandle } from "../components/Editor";
+import { KnowledgePanel } from "../components/Knowledge";
 import { Sidebar } from "../components/Sidebar";
 import { SettingsPanel } from "../components/Settings";
 import { StatusBar, type SaveStatus } from "../components/StatusBar";
@@ -13,7 +14,7 @@ import { countWords } from "../utils/wordCount";
 import { formatError } from "../utils/error";
 import "./main-layout.css";
 
-export type SidebarView = "chapters" | "settings";
+export type SidebarView = "chapters" | "knowledge" | "settings";
 
 interface MainLayoutProps {
   projectPath: string;
@@ -468,6 +469,7 @@ export default function MainLayout({
 
         <div className="sidebar-content">
           {sidebarView === "chapters" && <Sidebar projectPath={projectPath} />}
+          {sidebarView === "knowledge" && <KnowledgePanel projectPath={projectPath} />}
           {sidebarView === "settings" && <SettingsPanel />}
         </div>
       </aside>

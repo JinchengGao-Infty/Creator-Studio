@@ -8,6 +8,7 @@ mod keyring_store;
 mod presets;
 mod project;
 mod recent_projects;
+mod rag;
 mod security;
 mod session;
 mod summary;
@@ -26,6 +27,7 @@ use import::{import_txt, preview_import_txt};
 use presets::{get_presets, save_presets};
 use project::{create_project, get_project_info, open_project, save_project_config};
 use recent_projects::{add_recent_project, get_recent_projects};
+use rag::{append_doc as rag_append_doc_impl, build_index as rag_build_index_impl, list_docs as rag_list_docs_impl, read_doc as rag_read_doc_impl, search as rag_search_impl, set_doc_enabled as rag_set_doc_enabled_impl, write_doc as rag_write_doc_impl, KnowledgeDoc, RagHit, RagIndexSummary};
 use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
     rename_session, update_message_metadata, compact_session,
@@ -260,6 +262,51 @@ fn save_summary_entry(
     summary::save_summary(Path::new(&project_path), chapter_id, summary)
 }
 
+// ===== RAG Commands =====
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_list_docs(project_path: String) -> Result<Vec<KnowledgeDoc>, String> {
+    rag_list_docs_impl(Path::new(&project_path))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_set_doc_enabled(project_path: String, doc_path: String, enabled: bool) -> Result<(), String> {
+    rag_set_doc_enabled_impl(Path::new(&project_path), &doc_path, enabled)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_read_doc(project_path: String, doc_path: String) -> Result<String, String> {
+    rag_read_doc_impl(Path::new(&project_path), &doc_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_write_doc(project_path: String, doc_path: String, content: String) -> Result<(), String> {
+    rag_write_doc_impl(Path::new(&project_path), &doc_path, &content)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_append_doc(project_path: String, doc_path: String, content: String) -> Result<(), String> {
+    rag_append_doc_impl(Path::new(&project_path), &doc_path, &content)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn rag_build_index(project_path: String) -> Result<RagIndexSummary, String> {
+    let root = project_path.clone();
+    tauri::async_runtime::spawn_blocking(move || rag_build_index_impl(Path::new(&root)))
+        .await
+        .map_err(|e| format!("rag_build_index join error: {e}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn rag_search(project_path: String, query: String, top_k: Option<u32>) -> Result<Vec<RagHit>, String> {
+    let root = project_path.clone();
+    let q = query.clone();
+    let k = top_k.unwrap_or(5) as usize;
+    tauri::async_runtime::spawn_blocking(move || rag_search_impl(Path::new(&root), &q, k))
+        .await
+        .map_err(|e| format!("rag_search join error: {e}"))?
+}
+
 #[derive(Default)]
 struct AiChatRuntime {
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
@@ -388,6 +435,13 @@ pub fn run() {
             load_summaries,
             get_latest_summary,
             save_summary_entry,
+            rag_list_docs,
+            rag_set_doc_enabled,
+            rag_read_doc,
+            rag_write_doc,
+            rag_append_doc,
+            rag_build_index,
+            rag_search,
             ai_cancel,
             ai_chat,
             get_recent_projects,

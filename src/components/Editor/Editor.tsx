@@ -36,6 +36,7 @@ function Editor({
   ref: ForwardedRef<EditorHandle>,
 ) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastSelectionRef = useRef<string>("");
   const { value, set, undo, redo, reset, canUndo, canRedo } = useUndoRedo(initialContent);
 
   const { status, save, reset: resetAutoSave, hasUnsavedChanges } = useAutoSave(value, {
@@ -121,6 +122,22 @@ function Editor({
 
   const wordCount = useMemo(() => countWords(value), [value]);
 
+  const emitSelection = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    const selected = start === end ? "" : el.value.slice(start, end);
+    const trimmed = selected.slice(0, 4000);
+    if (trimmed === lastSelectionRef.current) return;
+    lastSelectionRef.current = trimmed;
+    window.dispatchEvent(
+      new CustomEvent("creatorai:editorSelection", {
+        detail: { projectPath, chapterId, text: trimmed },
+      }),
+    );
+  };
+
   if (!chapterId) {
     return (
       <div className="editor-empty">
@@ -145,6 +162,9 @@ function Editor({
         value={value}
         onChange={(e) => set(e.target.value)}
         onBlur={() => set(value, true)}
+        onSelect={emitSelection}
+        onMouseUp={emitSelection}
+        onKeyUp={emitSelection}
         placeholder="开始写作..."
         spellCheck={false}
       />

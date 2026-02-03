@@ -136,6 +136,7 @@ fn create_project_sync(path: String, name: String) -> Result<ProjectConfig, Stri
         .map_err(|e| format!("Failed to create .creatorai directory: {e}"))?;
     fs::create_dir_all(project_root.join("chapters"))
         .map_err(|e| format!("Failed to create chapters directory: {e}"))?;
+    let _ = fs::create_dir_all(project_root.join("knowledge"));
 
     let cfg_path = config_path(&project_root);
     if cfg_path.exists() {
@@ -187,6 +188,7 @@ fn open_project_sync(path: String) -> Result<ProjectConfig, String> {
     if !summaries_path.exists() {
         let _ = fs::write(&summaries_path, "[]\n");
     }
+    let _ = fs::create_dir_all(project_root.join("knowledge"));
     read_project_config(&project_root)
 }
 
