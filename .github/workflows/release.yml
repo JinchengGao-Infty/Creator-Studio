@@ -17,11 +17,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
       - run: brew install pnpm
       - run: pnpm install
+      - name: Build ai-engine for aarch64
+        run: |
+          cd packages/ai-engine
+          bun install
+          bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile ../../src-tauri/bin/ai-engine-aarch64-apple-darwin
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -39,11 +45,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin
       - run: brew install pnpm
       - run: pnpm install
+      - name: Build ai-engine for x86_64
+        run: |
+          cd packages/ai-engine
+          bun install
+          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile ../../src-tauri/bin/ai-engine-x86_64-apple-darwin
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,9 +73,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install -g pnpm
       - run: pnpm install
+      - name: Build ai-engine for Windows
+        run: |
+          cd packages/ai-engine
+          bun install
+          bun build src/cli.ts --compile --target=bun-windows-x64 --outfile ../../src-tauri/bin/ai-engine-x86_64-pc-windows-msvc.exe
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
