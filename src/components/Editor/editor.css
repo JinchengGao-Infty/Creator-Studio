@@ -38,6 +38,15 @@
   margin-left: 6px;
 }
 
+.editor-codemirror {
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-codemirror .cm-editor {
+  height: 100%;
+}
+
 .editor-textarea {
   flex: 1;
   min-height: 0;

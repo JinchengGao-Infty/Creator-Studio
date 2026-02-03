@@ -13,6 +13,14 @@ type ChatInput = {
   messages: Message[]
 }
 
+type CompleteInput = {
+  type: 'complete'
+  provider: ProviderConfig
+  parameters: ModelParameters
+  systemPrompt: string
+  messages: Message[]
+}
+
 type FetchModelsInput = {
   type: 'fetch_models'
   baseURL: string
@@ -67,7 +75,11 @@ function writeJson(output: EngineOutput) {
 async function main() {
   const engine = createEngine()
 
-  const input = (await readJsonFromStdin()) as ChatInput | FetchModelsInput | CompactInput
+  const input = (await readJsonFromStdin()) as
+    | ChatInput
+    | CompleteInput
+    | FetchModelsInput
+    | CompactInput
 
   if (input.type === 'fetch_models') {
     try {
@@ -87,6 +99,23 @@ async function main() {
         messages: input.messages,
       })
       writeJson({ type: 'compact_summary', content })
+      process.exit(0)
+    } catch (error) {
+      writeJson({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+      process.exit(1)
+    }
+  }
+
+  if (input.type === 'complete') {
+    engine.providerManager.addProvider(input.provider)
+
+    try {
+      const result = await engine.agent.complete(input.messages, {
+        providerId: input.provider.id,
+        parameters: input.parameters,
+        systemPrompt: input.systemPrompt,
+      })
+      writeJson({ type: 'done', content: result.content })
       process.exit(0)
     } catch (error) {
       writeJson({ type: 'error', message: error instanceof Error ? error.message : String(error) })

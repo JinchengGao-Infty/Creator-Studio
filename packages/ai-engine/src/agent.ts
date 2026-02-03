@@ -20,6 +20,47 @@ export class Agent {
     this.providerManager = providerManager
   }
 
+  // 纯文本补全（不启用工具）
+  async complete(messages: Message[], context: Omit<AgentContext, 'executeTools'>): Promise<AgentResult> {
+    const provider = this.providerManager.getProvider(context.providerId)
+    if (!provider) {
+      throw new Error(`Provider not found: ${context.providerId}`)
+    }
+
+    if (provider.models.length > 0 && !provider.models.includes(context.parameters.model)) {
+      throw new Error(
+        `Model not allowed by provider (${context.providerId}): ${context.parameters.model}`,
+      )
+    }
+
+    const sdk = this.providerManager.createSDK(context.providerId)
+    const model = sdk(context.parameters.model)
+
+    const allMessages = [
+      { role: 'system' as const, content: context.systemPrompt },
+      ...messages.map((m) => ({
+        role: m.role as any,
+        content: m.content,
+        toolCallId: m.toolCallId,
+      })),
+    ]
+
+    const result = await generateText({
+      model,
+      messages: allMessages as any,
+      maxSteps: 1,
+      abortSignal: context.abortSignal,
+      temperature: context.parameters.temperature,
+      topP: context.parameters.topP,
+      maxTokens: context.parameters.maxTokens,
+    } as any)
+
+    return {
+      content: (result as any).text ?? '',
+      toolCalls: [],
+    }
+  }
+
   // 运行 Agent
   async run(messages: Message[], context: AgentContext): Promise<AgentResult> {
     const provider = this.providerManager.getProvider(context.providerId)

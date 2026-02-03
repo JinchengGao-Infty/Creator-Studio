@@ -305,6 +305,136 @@ pub fn generate_compact_summary(
     }
 }
 
+fn complete_timeout() -> Duration {
+    const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+    let raw = std::env::var("CREATORAI_AI_COMPLETE_TIMEOUT_MS").ok();
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => Duration::from_millis(DEFAULT_TIMEOUT_MS),
+    }
+}
+
+pub fn run_complete(
+    provider: Value,
+    parameters: Value,
+    system_prompt: String,
+    messages: Vec<Value>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<String, String> {
+    let ai_engine_path = get_ai_engine_path()?;
+
+    let cancel_flag = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let timeout = complete_timeout();
+
+    let mut child = spawn_ai_engine(&ai_engine_path)?;
+
+    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    let reader_cancel = cancel_flag.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            if reader_cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = tx.send(Err("EOF".to_string()));
+                    break;
+                }
+                Ok(_) => {
+                    if tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Failed to read from stdout: {e}")));
+                    break;
+                }
+            }
+        }
+    });
+
+    let init_request = json!({
+        "type": "complete",
+        "provider": provider,
+        "parameters": parameters,
+        "systemPrompt": system_prompt,
+        "messages": messages,
+    });
+
+    writeln!(stdin, "{}", init_request.to_string())
+        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    stdin.flush()
+        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+    let started = Instant::now();
+    loop {
+        if cancel_flag.load(Ordering::SeqCst) {
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("已停止生成".to_string());
+        }
+        if started.elapsed() > timeout {
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("补全请求超时（请重试或更换模型/Provider）".to_string());
+        }
+
+        let line = match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(line)) => line,
+            Ok(Err(err)) => {
+                drop(stdin);
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("Failed to wait for ai-engine: {e}"))?;
+                return Err(format!("ai-engine exited unexpectedly: {status}. {err}"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                drop(stdin);
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("Failed to wait for ai-engine: {e}"))?;
+                return Err(format!("ai-engine exited unexpectedly: {status}"));
+            }
+        };
+
+        let response: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("Failed to parse response: {e}. line={line:?}"))?;
+
+        match response["type"].as_str() {
+            Some("done") => {
+                let content = response["content"].as_str().unwrap_or("").to_string();
+                drop(stdin);
+                let _ = child.wait();
+                return Ok(content);
+            }
+            Some("error") => {
+                let message = response["message"].as_str().unwrap_or("Unknown error");
+                drop(stdin);
+                let _ = child.wait();
+                return Err(message.to_string());
+            }
+            _ => {
+                drop(stdin);
+                let _ = child.wait();
+                return Err(format!("Unknown response type: {line}"));
+            }
+        }
+    }
+}
+
 pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
     run_chat_with_events(request, None, None)
 }

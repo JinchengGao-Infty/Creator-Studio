@@ -170,3 +170,48 @@ export async function aiChat(params: {
     toolCalls: Array.isArray(result.tool_calls) ? result.tool_calls : [],
   };
 }
+
+export async function aiComplete(params: {
+  projectDir: string;
+  beforeText: string;
+  afterText?: string;
+  maxChars?: number;
+}): Promise<string> {
+  const active = await getActiveChatConfig();
+  if (!active) {
+    throw new Error("请先在设置中添加 Provider，并设为当前，然后配置默认模型参数。");
+  }
+
+  const maxChars = params.maxChars ?? 180;
+  const before = params.beforeText ?? "";
+  const after = params.afterText ?? "";
+
+  const systemPrompt = `
+你是一个小说写作编辑器的“行内补全”助手。你将收到光标前后的文本片段，请输出要插入到光标处的补全文本。
+
+## 输出规则（必须遵守）
+- 只输出补全文本本身，不要解释、不要标题、不要 Markdown、不要引号。
+- 补全要短：优先 1-2 句，最多 ${maxChars} 个中文字符左右。
+- 不要重复光标前已出现的内容；不要改写已有内容，只补后续。
+- 绝对不要调用任何工具。
+  `.trim();
+
+  const userPrompt = `
+【光标前】
+${before}
+
+【光标后】
+${after}
+
+请输出应插入到光标处的补全文本。
+  `.trim();
+
+  const result = (await invoke("ai_complete", {
+    provider: active.provider,
+    parameters: active.parameters,
+    systemPrompt,
+    messages: [{ role: "user", content: userPrompt }],
+  })) as string;
+
+  return typeof result === "string" ? result : String(result ?? "");
+}

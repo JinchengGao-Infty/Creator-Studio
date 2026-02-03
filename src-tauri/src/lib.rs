@@ -312,6 +312,11 @@ struct AiChatRuntime {
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
 }
 
+#[derive(Default)]
+struct AiCompleteRuntime {
+    cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+}
+
 #[tauri::command]
 fn ai_cancel(runtime: tauri::State<AiChatRuntime>) -> Result<(), String> {
     let flag = runtime
@@ -327,6 +332,69 @@ fn ai_cancel(runtime: tauri::State<AiChatRuntime>) -> Result<(), String> {
         }
         None => Err("No running AI request".to_string()),
     }
+}
+
+#[tauri::command]
+fn ai_complete_cancel(runtime: tauri::State<AiCompleteRuntime>) -> Result<(), String> {
+    let flag = runtime
+        .cancel_flag
+        .lock()
+        .map_err(|_| "ai_complete_cancel lock poisoned".to_string())?
+        .clone();
+
+    match flag {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        None => Err("No running AI request".to_string()),
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn ai_complete(
+    runtime: tauri::State<'_, AiCompleteRuntime>,
+    provider: serde_json::Value,
+    parameters: serde_json::Value,
+    system_prompt: String,
+    messages: Vec<serde_json::Value>,
+) -> Result<String, String> {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_complete lock poisoned".to_string())?;
+        if let Some(prev) = guard.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        *guard = Some(cancel_flag.clone());
+    }
+
+    let cancel_for_task = cancel_flag.clone();
+    let response = match tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::run_complete(provider, parameters, system_prompt, messages, Some(cancel_for_task))
+    })
+    .await
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("ai_complete join error: {e}")),
+    };
+
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_complete lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
+        {
+            *guard = None;
+        }
+    }
+
+    response
 }
 
 // ===== AI Chat Command =====
@@ -412,6 +480,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AiChatRuntime::default())
+        .manage(AiCompleteRuntime::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             get_config,
@@ -443,6 +512,8 @@ pub fn run() {
             rag_build_index,
             rag_search,
             ai_cancel,
+            ai_complete_cancel,
+            ai_complete,
             ai_chat,
             get_recent_projects,
             add_recent_project,
