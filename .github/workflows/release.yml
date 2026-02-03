@@ -38,34 +38,6 @@ jobs:
           name: macos-arm64
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
-  build-macos-x64:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - uses: oven-sh/setup-bun@v2
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
-      - run: brew install pnpm
-      - run: pnpm install
-      - name: Build ai-engine for x86_64
-        run: |
-          cd packages/ai-engine
-          bun install
-          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile ../../src-tauri/bin/ai-engine-x86_64-apple-darwin
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: --target x86_64-apple-darwin
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-x64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-
   build-windows:
     runs-on: windows-latest
     steps:
@@ -93,7 +65,7 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe
 
   release:
-    needs: [build-macos-arm64, build-macos-x64, build-windows]
+    needs: [build-macos-arm64, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -115,7 +87,6 @@ jobs:
             
             ### 下载
             - **macOS (Apple Silicon)**: CreatorAI_*_aarch64.dmg
-            - **macOS (Intel)**: CreatorAI_*_x64.dmg
             - **Windows**: CreatorAI_*_x64-setup.exe 或 .msi
             
             ### 更新内容
