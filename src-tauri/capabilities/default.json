@@ -13,7 +13,9 @@
       "identifier": "opener:allow-open-path",
       "allow": [
         { "path": "$HOME/**" },
-        { "path": "$DESKTOP/**" }
+        { "path": "$HOME/**/.creatorai/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**/.creatorai/**" }
       ]
     },
     "opener:allow-open-url"
