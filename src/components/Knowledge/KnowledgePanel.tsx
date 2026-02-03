@@ -242,6 +242,9 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
         <Typography.Paragraph style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
           把人物/设定/时间线等资料放在 <Typography.Text code>knowledge/</Typography.Text> 目录中（支持 .md/.txt）。
           AI 可通过 <Typography.Text code>rag_search</Typography.Text> 检索这些资料。
+          <br />
+          向量检索使用的嵌入模型会在首次点击“构建索引”时自动下载到本机缓存（无需手动放置文件），索引会保存到{" "}
+          <Typography.Text code>.creatorai/rag/</Typography.Text>。
         </Typography.Paragraph>
 
         <Space.Compact style={{ width: "100%" }}>
@@ -424,4 +427,3 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
     </div>
   );
 }
-

@@ -376,6 +376,7 @@ export default function ProviderSettings() {
             name="api_key"
             label="API Key"
             rules={[{ required: !editingProvider, message: "请输入 API Key" }]}
+            extra="API Key 会保存在系统钥匙串（Keychain）。首次发送消息/刷新模型时，macOS 可能会弹窗请求授权访问。"
           >
             <Input.Password
               placeholder={editingProvider ? "留空则不修改" : "请输入 API Key"}

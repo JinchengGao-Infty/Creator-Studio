@@ -130,10 +130,12 @@ export function getToolsForSDK(executeTools?: ExecuteTools) {
       if (!result) {
         throw new Error(`No result returned for tool: ${toolName}`)
       }
+      // Don't throw here—tool failures should be reported to the model and UI,
+      // but should not crash the whole chat request.
       if (result.error) {
-        throw new Error(result.error)
+        return JSON.stringify({ error: result.error })
       }
-      return result.result
+      return result.result ?? ''
     }
 
   return {
