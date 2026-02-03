@@ -9,7 +9,13 @@
     "core:window:allow-destroy",
     "dialog:default",
     "opener:default",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" }
+      ]
+    },
     "opener:allow-open-url"
   ]
 }
