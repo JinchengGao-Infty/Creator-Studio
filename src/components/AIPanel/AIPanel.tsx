@@ -710,6 +710,17 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
       const appended = toolCalls.some((c) => c.name === "append" && c.status === "success");
       if (appended) {
+        const appendedContent = toolCalls
+          .filter((c) => c.name === "append" && c.status === "success")
+          .map((c) => (typeof c.args?.content === "string" ? c.args.content : ""))
+          .join("");
+        if (resolved?.chapterId) {
+          window.dispatchEvent(
+            new CustomEvent("creatorai:chapterAppended", {
+              detail: { projectPath, chapterId: resolved.chapterId, content: appendedContent },
+            }),
+          );
+        }
         window.dispatchEvent(
           new CustomEvent("creatorai:chaptersChanged", { detail: { projectPath, reason: "append" } }),
         );

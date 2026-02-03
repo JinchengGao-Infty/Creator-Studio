@@ -342,7 +342,21 @@ export default function MainLayout({
       const { detail } = event as CustomEvent<{ projectPath: string; reason?: string }>;
       if (!detail || detail.projectPath !== projectPath) return;
       void refreshChapters();
-      if (detail.reason === "append" && saveStatus === "saved") {
+    };
+
+    const onChapterAppended = (event: Event) => {
+      const { detail } = event as CustomEvent<{
+        projectPath: string;
+        chapterId: string;
+        content: string;
+      }>;
+      if (!detail || detail.projectPath !== projectPath) return;
+      if (!detail.chapterId || detail.chapterId !== currentChapterId) return;
+
+      const hasUnsaved = editorRef.current?.hasUnsavedChanges() ?? false;
+      if (hasUnsaved) {
+        editorRef.current?.applyExternalAppend(detail.content ?? "");
+      } else {
         void refreshCurrentChapterContent();
       }
     };
@@ -356,18 +370,19 @@ export default function MainLayout({
     window.addEventListener("creatorai:chapterSelected", onSelected);
     window.addEventListener("creatorai:openSettings", onOpenSettings);
     window.addEventListener("creatorai:chaptersChanged", onChaptersChanged);
+    window.addEventListener("creatorai:chapterAppended", onChapterAppended);
     window.addEventListener("creatorai:saveStatus", onSaveStatus);
     return () => {
       window.removeEventListener("creatorai:chapterSelected", onSelected);
       window.removeEventListener("creatorai:openSettings", onOpenSettings);
       window.removeEventListener("creatorai:chaptersChanged", onChaptersChanged);
+      window.removeEventListener("creatorai:chapterAppended", onChapterAppended);
       window.removeEventListener("creatorai:saveStatus", onSaveStatus);
     };
   }, [
     projectPath,
     refreshChapters,
     refreshCurrentChapterContent,
-    saveStatus,
     currentChapterId,
   ]);
 

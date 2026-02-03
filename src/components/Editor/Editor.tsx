@@ -11,6 +11,7 @@ import { useUndoRedo } from "./useUndoRedo";
 export interface EditorHandle {
   saveNow: () => Promise<boolean>;
   hasUnsavedChanges: () => boolean;
+  applyExternalAppend: (content: string) => void;
 }
 
 export interface EditorProps {
@@ -57,8 +58,13 @@ function Editor({
         }
       },
       hasUnsavedChanges: () => hasUnsavedChanges,
+      applyExternalAppend: (content: string) => {
+        if (!chapterId) return;
+        if (!content) return;
+        set(`${value}${content}`, true);
+      },
     }),
-    [chapterId, save, hasUnsavedChanges],
+    [chapterId, save, hasUnsavedChanges, set, value],
   );
 
   useEffect(() => {
