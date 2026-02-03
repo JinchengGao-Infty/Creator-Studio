@@ -1,5 +1,8 @@
 use bincode;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -15,6 +18,10 @@ const RAG_DIR: &str = ".creatorai/rag";
 const RAG_CONFIG_PATH: &str = ".creatorai/rag/config.json";
 const RAG_INDEX_PATH: &str = ".creatorai/rag/index.bin";
 const RAG_SCHEMA_VERSION: u32 = 1;
+const LOCAL_EMBEDDING_MODEL_DIR: &str = ".creatorai/rag/models/Xenova/bge-small-zh-v1.5";
+const LOCAL_EMBEDDING_MODEL_NAME: &str = "Xenova/bge-small-zh-v1.5";
+const HF_CACHE_DIR: &str = ".creatorai/rag/hf-cache";
+const HF_MIRROR_ENDPOINT: &str = "https://hf-mirror.com";
 
 fn now_unix_seconds() -> Result<u64, String> {
     SystemTime::now()
@@ -69,6 +76,14 @@ fn config_path(project_root: &Path) -> Result<PathBuf, String> {
 
 fn index_path(project_root: &Path) -> Result<PathBuf, String> {
     validate_path(project_root, RAG_INDEX_PATH)
+}
+
+fn local_model_dir(project_root: &Path) -> Result<PathBuf, String> {
+    validate_path(project_root, LOCAL_EMBEDDING_MODEL_DIR)
+}
+
+fn hf_cache_dir(project_root: &Path) -> Result<PathBuf, String> {
+    validate_path(project_root, HF_CACHE_DIR)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,21 +318,150 @@ fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     chunks
 }
 
-fn embedder() -> Result<MutexGuard<'static, TextEmbedding>, String> {
-    static EMBEDDER: OnceLock<Result<Mutex<TextEmbedding>, String>> = OnceLock::new();
-    let embedder = EMBEDDER.get_or_init(|| {
-        let options =
-            InitOptions::new(EmbeddingModel::BGESmallZHV15).with_show_download_progress(true);
-        TextEmbedding::try_new(options)
-            .map(Mutex::new)
-            .map_err(|e| format!("Failed to init embedding model: {e}"))
-    });
-    match embedder {
-        Ok(mutex) => mutex
-            .lock()
-            .map_err(|_| "Embedding model lock poisoned".to_string()),
-        Err(err) => Err(err.clone()),
+fn load_local_embedding_model(model_dir: &Path) -> Result<Option<TextEmbedding>, String> {
+    if !model_dir.exists() {
+        return Ok(None);
     }
+
+    let onnx_path = model_dir.join("onnx/model.onnx");
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let config_path = model_dir.join("config.json");
+    let special_tokens_map_path = model_dir.join("special_tokens_map.json");
+    let tokenizer_config_path = model_dir.join("tokenizer_config.json");
+
+    let required = [
+        (&onnx_path, "onnx/model.onnx"),
+        (&tokenizer_path, "tokenizer.json"),
+        (&config_path, "config.json"),
+        (&special_tokens_map_path, "special_tokens_map.json"),
+        (&tokenizer_config_path, "tokenizer_config.json"),
+    ];
+
+    // If the directory exists but none of the expected files are present, treat it as "not configured"
+    // and fall back to downloading.
+    let any_present = required.iter().any(|(p, _)| p.exists());
+    if !any_present {
+        return Ok(None);
+    }
+
+    for (path, name) in required {
+        if !path.exists() {
+            return Err(format!(
+                "Local embedding model directory is missing required file: {name}"
+            ));
+        }
+    }
+
+    let onnx_file = fs::read(&onnx_path).map_err(|e| format!("Failed to read {onnx_path:?}: {e}"))?;
+    let tokenizer_files = TokenizerFiles {
+        tokenizer_file: fs::read(&tokenizer_path)
+            .map_err(|e| format!("Failed to read {tokenizer_path:?}: {e}"))?,
+        config_file: fs::read(&config_path).map_err(|e| format!("Failed to read {config_path:?}: {e}"))?,
+        special_tokens_map_file: fs::read(&special_tokens_map_path)
+            .map_err(|e| format!("Failed to read {special_tokens_map_path:?}: {e}"))?,
+        tokenizer_config_file: fs::read(&tokenizer_config_path)
+            .map_err(|e| format!("Failed to read {tokenizer_config_path:?}: {e}"))?,
+    };
+
+    let model = UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files).with_pooling(Pooling::Cls);
+    TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::default())
+        .map(Some)
+        .map_err(|e| format!("Failed to init local embedding model: {e}"))
+}
+
+fn init_embedding_model(project_root: &Path) -> Result<TextEmbedding, String> {
+    // Prefer local model files if provided by the user.
+    let local_dir = local_model_dir(project_root)?;
+    match load_local_embedding_model(&local_dir)? {
+        Some(model) => return Ok(model),
+        None => {}
+    }
+
+    // Otherwise, download via HuggingFace hub (can be mirrored via HF_ENDPOINT).
+    let cache_dir = hf_cache_dir(project_root)?;
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create hf cache dir: {e}"))?;
+
+    let options = InitOptions::new(EmbeddingModel::BGESmallZHV15)
+        .with_cache_dir(cache_dir)
+        .with_show_download_progress(true);
+
+    let had_custom_endpoint = std::env::var("HF_ENDPOINT")
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty());
+
+    match TextEmbedding::try_new(options.clone()) {
+        Ok(model) => Ok(model),
+        Err(err) => {
+            if had_custom_endpoint {
+                return Err(format!("Failed to init embedding model: {err}"));
+            }
+
+            // Retry once with a common mirror when the default endpoint is blocked.
+            let prev = std::env::var("HF_ENDPOINT").ok();
+            std::env::set_var("HF_ENDPOINT", HF_MIRROR_ENDPOINT);
+            let retry = TextEmbedding::try_new(options);
+            match retry {
+                Ok(model) => {
+                    // Restore previous state to avoid surprising global behavior.
+                    match prev {
+                        Some(value) => std::env::set_var("HF_ENDPOINT", value),
+                        None => std::env::remove_var("HF_ENDPOINT"),
+                    }
+                    Ok(model)
+                }
+                Err(err2) => {
+                    match prev {
+                        Some(value) => std::env::set_var("HF_ENDPOINT", value),
+                        None => std::env::remove_var("HF_ENDPOINT"),
+                    }
+                    Err(format!(
+                        "Failed to init embedding model (HF). You can either:\n\
+1) Set HF_ENDPOINT to a reachable mirror (e.g. {HF_MIRROR_ENDPOINT}) and retry; or\n\
+2) Download the following files for {LOCAL_EMBEDDING_MODEL_NAME} (from HuggingFace, hf-mirror, ModelScope/魔搭等任意来源) and place them under:\n\
+   {LOCAL_EMBEDDING_MODEL_DIR}/\n\
+   - onnx/model.onnx\n\
+   - tokenizer.json\n\
+   - config.json\n\
+   - special_tokens_map.json\n\
+   - tokenizer_config.json\n\
+\n\
+Original error: {err}\n\
+Mirror error: {err2}"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn embedder(project_root: &Path) -> Result<MutexGuard<'static, TextEmbedding>, String> {
+    static EMBEDDER: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
+    static INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    if let Some(embedder) = EMBEDDER.get() {
+        return embedder
+            .lock()
+            .map_err(|_| "Embedding model lock poisoned".to_string());
+    }
+
+    let lock = INIT_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| "Embedding model init lock poisoned".to_string())?;
+
+    if let Some(embedder) = EMBEDDER.get() {
+        return embedder
+            .lock()
+            .map_err(|_| "Embedding model lock poisoned".to_string());
+    }
+
+    let model = init_embedding_model(project_root)?;
+    let _ = EMBEDDER.set(Mutex::new(model));
+    EMBEDDER
+        .get()
+        .ok_or("Embedding model init failed".to_string())?
+        .lock()
+        .map_err(|_| "Embedding model lock poisoned".to_string())
 }
 
 fn normalize_embedding(mut v: Vec<f32>) -> (Vec<f32>, f32) {
@@ -399,7 +543,7 @@ pub fn build_index(project_root: &Path) -> Result<RagIndexSummary, String> {
         }
     }
 
-    let mut embedder = embedder()?;
+    let mut embedder = embedder(&project_root)?;
     let inputs: Vec<&str> = chunk_texts.iter().map(|s| s.as_str()).collect();
     let embeddings = embedder
         .embed(inputs, None)
@@ -499,7 +643,7 @@ pub fn search(project_root: &Path, query: &str, top_k: usize) -> Result<Vec<RagH
         return Ok(Vec::new());
     }
 
-    let mut embedder = embedder()?;
+    let mut embedder = embedder(&project_root)?;
     let q_emb = embedder
         .embed(vec![q], None)
         .map_err(|e| format!("Embedding failed: {e}"))?;

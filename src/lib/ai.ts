@@ -118,18 +118,28 @@ export async function getActiveChatConfig(): Promise<{
     })) as string | null;
     if (!apiKey) return null;
 
+    const providerModels = Array.isArray(activeProvider.models) ? activeProvider.models : [];
+    const desiredModel = (config.default_parameters.model ?? "").trim();
+    let resolvedModel = desiredModel;
+    if (providerModels.length) {
+      if (!resolvedModel || !providerModels.includes(resolvedModel)) {
+        resolvedModel = providerModels[0] ?? "";
+      }
+    }
+    if (!resolvedModel) return null;
+
     return {
       provider: {
         id: activeProvider.id,
         name: activeProvider.name,
         baseURL: activeProvider.base_url,
         apiKey,
-        models: activeProvider.models || [],
+        models: providerModels,
         providerType: activeProvider.provider_type,
         headers: activeProvider.headers ?? undefined,
       },
       parameters: {
-        model: config.default_parameters.model,
+        model: resolvedModel,
         temperature: config.default_parameters.temperature,
         topP: config.default_parameters.top_p,
         topK: config.default_parameters.top_k ?? undefined,
@@ -151,7 +161,7 @@ export async function aiChat(params: {
 }): Promise<{ content: string; toolCalls: AIChatToolCall[] }> {
   const active = await getActiveChatConfig();
   if (!active) {
-    throw new Error("请先在设置中添加 Provider，并设为当前，然后配置默认模型参数。");
+    throw new Error("请先在设置中添加 Provider，并设为当前，然后配置模型参数。");
   }
 
   const result = (await invoke("ai_chat", {
@@ -179,7 +189,7 @@ export async function aiComplete(params: {
 }): Promise<string> {
   const active = await getActiveChatConfig();
   if (!active) {
-    throw new Error("请先在设置中添加 Provider，并设为当前，然后配置默认模型参数。");
+    throw new Error("请先在设置中添加 Provider，并设为当前，然后配置模型参数。");
   }
 
   const maxChars = params.maxChars ?? 180;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Button, Card, Form, Input, InputNumber, Select, Slider, Space, Tooltip, message } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
@@ -32,7 +32,7 @@ export default function ModelSettings() {
   const [loading, setLoading] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
-  const loadProviders = async (): Promise<GlobalConfig | null> => {
+  const loadProviders = useCallback(async (): Promise<GlobalConfig | null> => {
     try {
       const config = (await invoke("get_config")) as GlobalConfig;
       setProviders(config.providers || []);
@@ -52,30 +52,40 @@ export default function ModelSettings() {
       setModels([]);
       return null;
     }
-  };
+  }, []);
 
-  const loadAll = async () => {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     try {
       const config = await loadProviders();
       if (!config) throw new Error("读取配置失败");
 
+      const activeId = config.active_provider_id ?? null;
+      const activeProvider = activeId ? (config.providers || []).find((p) => p.id === activeId) : null;
+      const providerModels = (activeProvider?.models || []).filter(Boolean);
+      const desiredModel = (config.default_parameters.model ?? "").trim();
+      const resolvedModel =
+        providerModels.length && (!desiredModel || !providerModels.includes(desiredModel))
+          ? providerModels[0]
+          : desiredModel;
+
       form.setFieldsValue({
-        model: config.default_parameters.model,
+        model: resolvedModel || undefined,
         temperature: config.default_parameters.temperature,
         top_p: config.default_parameters.top_p,
         top_k: config.default_parameters.top_k,
         max_tokens: config.default_parameters.max_tokens,
       });
 
-      const activeId = config.active_provider_id ?? null;
-      const activeProvider = activeId ? (config.providers || []).find((p) => p.id === activeId) : null;
       if (activeId && !(activeProvider?.models || []).length) {
         setRefreshingModels(true);
         message.loading({ content: "正在自动获取模型列表...", key: "models-auto", duration: 0 });
         try {
           const list = (await invoke("refresh_provider_models", { providerId: activeId })) as string[];
           setModels(list || []);
+          if (!form.getFieldValue("model") && (list || []).length) {
+            form.setFieldsValue({ model: list[0] });
+          }
           message.success({ content: `已获取 ${(list || []).length} 个模型`, key: "models-auto" });
           window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
         } catch (error) {
@@ -89,33 +99,42 @@ export default function ModelSettings() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [form, loadProviders]);
 
   useEffect(() => {
     void loadAll();
-  }, []);
+  }, [loadAll]);
 
   useEffect(() => {
     const onConfigChanged = () => {
-      void loadProviders();
+      void loadAll();
     };
     window.addEventListener("creatorai:globalConfigChanged", onConfigChanged);
     return () => window.removeEventListener("creatorai:globalConfigChanged", onConfigChanged);
-  }, []);
+  }, [loadAll]);
 
   const handleProviderChange = async (providerId: string) => {
     try {
       await invoke("set_active_provider", { providerId });
       const config = await loadProviders();
-      form.setFieldsValue({ model: undefined });
-
       const provider = config?.providers?.find((p) => p.id === providerId);
+      const desiredModel = (config?.default_parameters?.model ?? "").trim();
+      const providerModels = (provider?.models || []).filter(Boolean);
+      const resolvedModel =
+        providerModels.length && (!desiredModel || !providerModels.includes(desiredModel))
+          ? providerModels[0]
+          : desiredModel;
+      form.setFieldsValue({ model: resolvedModel || undefined });
+
       if (!provider?.models?.length) {
         setRefreshingModels(true);
         message.loading({ content: "正在自动获取模型列表...", key: "models-auto", duration: 0 });
         try {
           const list = (await invoke("refresh_provider_models", { providerId })) as string[];
           setModels(list || []);
+          if ((list || []).length) {
+            form.setFieldsValue({ model: list[0] });
+          }
           message.success({ content: `已获取 ${(list || []).length} 个模型`, key: "models-auto" });
           window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
         } catch (error) {

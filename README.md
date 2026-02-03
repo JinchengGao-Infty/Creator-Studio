@@ -29,6 +29,7 @@ Creator Studio 面向长篇小说/系列创作场景，提供“项目-章节”
 前置依赖：
 - Node.js（建议 18+）
 - Rust（stable）
+- Bun（用于编译内置 `ai-engine` sidecar；不想装 Bun 可直接使用发布版应用）
 - macOS 需要 Xcode Command Line Tools：`xcode-select --install`
 
 安装依赖：
@@ -40,13 +41,13 @@ npm install
 启动开发模式（Tauri）：
 
 ```bash
-npm run tauri dev
+npm run tauri:dev
 ```
 
 构建安装包（macOS .dmg）：
 
 ```bash
-npm run tauri build
+npm run tauri:build
 ```
 
 ## 使用说明
@@ -58,6 +59,12 @@ npm run tauri build
    - 选择“讨论”模式：梳理情节、推演冲突、完善设定
    - 选择“续写”模式：基于上下文生成续写内容并插入到正文
 5. **写作预设**：为不同作品配置风格、角色设定与写作约束，提升一致性
+
+## 知识库（RAG）
+
+- 把人物/设定/时间线等资料放在项目目录的 `knowledge/`（支持 `.md/.txt`），在侧边栏「知识库」里点击“构建索引”。
+- 索引与缓存默认保存到项目目录的 `.creatorai/rag/`。
+- 若自动下载嵌入模型失败，可设置环境变量 `HF_ENDPOINT`（例如 `https://hf-mirror.com`），或手动下载模型文件放到 `.creatorai/rag/models/Xenova/bge-small-zh-v1.5/`。
 
 ## 技术栈
 

@@ -11,7 +11,7 @@ export default function SettingsPanel() {
         items={[
           {
             key: "provider",
-            label: "Provider",
+            label: "服务商",
             children: <ProviderSettings />,
           },
           {

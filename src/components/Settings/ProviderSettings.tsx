@@ -199,30 +199,18 @@ export default function ProviderSettings() {
 
   const openEditModal = async (provider: Provider) => {
     setEditingProvider(provider);
-    try {
-      const apiKey = (await invoke("get_api_key", {
-        providerId: provider.id,
-      })) as string | null;
-      form.setFieldsValue({
-        name: provider.name,
-        base_url: provider.base_url,
-        provider_type: provider.provider_type,
-        api_key: apiKey || "",
-      });
-    } catch {
-      form.setFieldsValue({
-        name: provider.name,
-        base_url: provider.base_url,
-        provider_type: provider.provider_type,
-        api_key: "",
-      });
-    }
+    form.setFieldsValue({
+      name: provider.name,
+      base_url: provider.base_url,
+      provider_type: provider.provider_type,
+      api_key: "",
+    });
     setModalVisible(true);
   };
 
   return (
     <Card
-      title="Provider"
+      title="模型服务商（Provider）"
       extra={
         <Button
           type="primary"
@@ -348,7 +336,7 @@ export default function ProviderSettings() {
       />
 
       <Modal
-        title={editingProvider ? "编辑 Provider" : "添加 Provider"}
+        title={editingProvider ? "编辑服务商" : "添加服务商"}
         open={modalVisible}
         onCancel={() => {
           setModalVisible(false);
@@ -376,7 +364,7 @@ export default function ProviderSettings() {
             name="api_key"
             label="API Key"
             rules={[{ required: !editingProvider, message: "请输入 API Key" }]}
-            extra="API Key 会保存在系统钥匙串（Keychain）。首次发送消息/刷新模型时，macOS 可能会弹窗请求授权访问。"
+            extra="API Key 会保存在系统钥匙串（Keychain）。首次使用（发送消息/刷新模型）时，macOS 可能会弹窗请求授权访问。编辑时留空表示不修改。"
           >
             <Input.Password
               placeholder={editingProvider ? "留空则不修改" : "请输入 API Key"}

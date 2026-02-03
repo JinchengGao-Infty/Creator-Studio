@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "ai-engine:build": "node scripts/build-ai-engine.mjs",
+    "tauri:dev": "npm run ai-engine:build && tauri dev",
     "tauri:build": "npm run ai-engine:build && CI=true tauri build"
   },
   "dependencies": {

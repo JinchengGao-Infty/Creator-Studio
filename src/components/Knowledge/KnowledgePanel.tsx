@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { Button, Card, Checkbox, Input, List, Modal, Space, Typography, message } from "antd";
 import { EditOutlined, FileAddOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
 import { formatError } from "../../utils/error";
@@ -48,6 +49,13 @@ function defaultDocPath(fileName: string): string {
   return `knowledge/${withExt}`;
 }
 
+function joinPath(parent: string, child: string): string {
+  const trimmedParent = (parent ?? "").replace(/[\\/]+$/, "");
+  const separator = trimmedParent.includes("\\") ? "\\" : "/";
+  if (!trimmedParent) return child;
+  return `${trimmedParent}${separator}${child}`;
+}
+
 export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [loading, setLoading] = useState(false);
@@ -66,6 +74,24 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   const [searching, setSearching] = useState(false);
 
   const enabledCount = useMemo(() => docs.filter((d) => d.enabled).length, [docs]);
+  const knowledgeAbs = useMemo(() => joinPath(projectPath, "knowledge"), [projectPath]);
+  const ragAbs = useMemo(() => joinPath(projectPath, ".creatorai/rag"), [projectPath]);
+  const localModelAbs = useMemo(
+    () => joinPath(projectPath, ".creatorai/rag/models/Xenova/bge-small-zh-v1.5"),
+    [projectPath],
+  );
+
+  const handleOpenPath = async (path: string) => {
+    if (!isTauri()) {
+      message.info("当前为 Web 环境，无法直接打开本地目录。");
+      return;
+    }
+    try {
+      await openPath(path);
+    } catch (error) {
+      message.error(`打开失败: ${formatError(error)}`);
+    }
+  };
 
   const loadDocs = async () => {
     setLoading(true);
@@ -240,12 +266,31 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
         }
       >
         <Typography.Paragraph style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
-          把人物/设定/时间线等资料放在 <Typography.Text code>knowledge/</Typography.Text> 目录中（支持 .md/.txt）。
-          AI 可通过 <Typography.Text code>rag_search</Typography.Text> 检索这些资料。
+          把人物/设定/时间线等资料放在 <Typography.Text code>{knowledgeAbs}</Typography.Text>{" "}
+          （支持 .md/.txt），AI 可通过 <Typography.Text code>rag_search</Typography.Text> 检索这些资料。
           <br />
-          向量检索使用的嵌入模型会在首次点击“构建索引”时自动下载到本机缓存（无需手动放置文件），索引会保存到{" "}
-          <Typography.Text code>.creatorai/rag/</Typography.Text>。
+          索引保存位置：<Typography.Text code>{ragAbs}</Typography.Text>。
+          <br />
+          嵌入模型默认会在首次点击“构建索引”时下载（国内可能无法访问 HuggingFace）。你也可以手动下载模型文件并放到：{" "}
+          <Typography.Text code>{localModelAbs}</Typography.Text>{" "}
+          （需要：onnx/model.onnx、tokenizer.json、config.json、special_tokens_map.json、tokenizer_config.json）。
+          <br />
+          下载失败时应用会自动尝试使用镜像（例如 <Typography.Text code>https://hf-mirror.com</Typography.Text>）。
+          你也可以在启动应用前手动设置环境变量 <Typography.Text code>HF_ENDPOINT</Typography.Text>{" "}
+          （或从魔搭/ModelScope 等平台下载文件后放到上面目录）。
         </Typography.Paragraph>
+
+        <Space size={6} wrap>
+          <Button size="small" onClick={() => void handleOpenPath(knowledgeAbs)}>
+            打开 knowledge/
+          </Button>
+          <Button size="small" onClick={() => void handleOpenPath(ragAbs)}>
+            打开 .creatorai/rag/
+          </Button>
+          <Button size="small" onClick={() => void handleOpenPath(localModelAbs)}>
+            打开嵌入模型目录
+          </Button>
+        </Space>
 
         <Space.Compact style={{ width: "100%" }}>
           <Input

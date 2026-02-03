@@ -112,6 +112,7 @@ fn find_bundled_ai_engine() -> Option<PathBuf> {
     let candidates = [
         exe_dir.clone(),
         exe_dir.join("../Resources"),
+        exe_dir.join("../Resources/bin"),
         exe_dir.join("../MacOS"),
         exe_dir.join("../bin"),
     ];
@@ -123,7 +124,17 @@ fn find_bundled_ai_engine() -> Option<PathBuf> {
     None
 }
 
+fn find_dev_sidecar_ai_engine() -> Option<PathBuf> {
+    let root = dev_repo_root_dir()?;
+    let dir = root.join("src-tauri/bin");
+    if !dir.exists() {
+        return None;
+    }
+    find_ai_engine_in_dir(&dir)
+}
+
 fn get_ai_engine_path() -> Result<PathBuf, String> {
+    let mut override_error: Option<String> = None;
     if let Ok(raw) = std::env::var("CREATORAI_AI_ENGINE_CLI_PATH") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
@@ -136,16 +147,21 @@ fn get_ai_engine_path() -> Result<PathBuf, String> {
                     .join(candidate)
             };
             if !resolved.exists() {
-                return Err(format!(
+                override_error = Some(format!(
                     "ai-engine CLI override not found: {}",
                     resolved.display()
                 ));
+            } else {
+                return Ok(resolved);
             }
-            return Ok(resolved);
         }
     }
 
     if let Some(path) = find_bundled_ai_engine() {
+        return Ok(path);
+    }
+
+    if let Some(path) = find_dev_sidecar_ai_engine() {
         return Ok(path);
     }
 
@@ -156,9 +172,13 @@ fn get_ai_engine_path() -> Result<PathBuf, String> {
         }
     }
 
-    Err(
-        "ai-engine CLI not found. If you're running a packaged build, reinstall/update the app. If you're running from source, ensure `packages/ai-engine/src/cli.ts` exists or set `CREATORAI_AI_ENGINE_CLI_PATH`.".to_string(),
-    )
+    let mut message =
+        "ai-engine CLI not found. If you're running a packaged build, reinstall/update the app. If you're running from source, ensure `packages/ai-engine/src/cli.ts` exists, or run `npm run ai-engine:build`, or set `CREATORAI_AI_ENGINE_CLI_PATH`."
+            .to_string();
+    if let Some(prefix) = override_error {
+        message = format!("{prefix}\n\n{message}");
+    }
+    Err(message)
 }
 
 fn is_script_path(path: &Path) -> bool {
@@ -185,7 +205,15 @@ fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("Failed to spawn ai-engine: {e}"))
+        .map_err(|e| {
+            if is_script_path(path) && matches!(e.kind(), std::io::ErrorKind::NotFound) {
+                return format!(
+                    "Failed to spawn ai-engine: {e}. `bun` is required to run `{}`. Install Bun or build the bundled sidecar via `npm run ai-engine:build`.",
+                    path.display()
+                );
+            }
+            format!("Failed to spawn ai-engine: {e}")
+        })
 }
 
 fn format_tool_runs(runs: &[ToolCall]) -> String {
