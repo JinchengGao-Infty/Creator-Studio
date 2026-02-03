@@ -5,8 +5,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::file_ops::{append, list, read, search, write};
 use crate::project::ChapterIndex;
@@ -49,6 +51,20 @@ pub struct ChatRequest {
 pub struct ChatResponse {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+}
+
+fn chat_timeout() -> Duration {
+    const DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+    let raw = std::env::var("CREATORAI_AI_CHAT_TIMEOUT_MS").ok();
+    match raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => Duration::from_millis(DEFAULT_TIMEOUT_MS),
+    }
 }
 
 fn dev_repo_root_dir() -> Option<PathBuf> {
@@ -290,14 +306,17 @@ pub fn generate_compact_summary(
 }
 
 pub fn run_chat(request: ChatRequest) -> Result<ChatResponse, String> {
-    run_chat_with_events(request, None)
+    run_chat_with_events(request, None, None)
 }
 
 pub fn run_chat_with_events(
     request: ChatRequest,
     events: Option<ChatEventHandler>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<ChatResponse, String> {
     let ai_engine_path = get_ai_engine_path()?;
+
+    let cancel_flag = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
     let provider_base_url = request
         .provider
@@ -314,7 +333,32 @@ pub fn run_chat_with_events(
 
     let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
-    let mut reader = BufReader::new(stdout);
+    let (tx, rx) = mpsc::channel::<Result<String, String>>();
+    let reader_cancel = cancel_flag.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            if reader_cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = tx.send(Err("EOF".to_string()));
+                    break;
+                }
+                Ok(_) => {
+                    if tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Failed to read from stdout: {e}")));
+                    break;
+                }
+            }
+        }
+    });
 
     // 发送初始请求
     let init_request = json!({
@@ -331,20 +375,48 @@ pub fn run_chat_with_events(
         .map_err(|e| format!("Failed to flush stdin: {e}"))?;
 
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let timeout = chat_timeout();
+    let mut last_progress = Instant::now();
 
     // 循环处理响应
     loop {
-        let mut line = String::new();
-        let read_bytes = reader
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read from stdout: {e}"))?;
-
-        if read_bytes == 0 {
-            let status = child
-                .wait()
-                .map_err(|e| format!("Failed to wait for ai-engine: {e}"))?;
-            return Err(format!("ai-engine exited unexpectedly: {status}"));
+        if cancel_flag.load(Ordering::SeqCst) {
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("已停止生成".to_string());
         }
+
+        if last_progress.elapsed() > timeout {
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("AI 请求超时（请重试或更换模型/Provider）".to_string());
+        }
+
+        let line = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(line)) => {
+                last_progress = Instant::now();
+                line
+            }
+            Ok(Err(err)) => {
+                drop(stdin);
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("Failed to wait for ai-engine: {e}"))?;
+                return Err(format!("ai-engine exited unexpectedly: {status}. {err}"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                drop(stdin);
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("Failed to wait for ai-engine: {e}"))?;
+                return Err(format!("ai-engine exited unexpectedly: {status}"));
+            }
+        };
 
         let response: Value = serde_json::from_str(&line)
             .map_err(|e| format!("Failed to parse response: {e}. line={line:?}"))?;
@@ -370,6 +442,13 @@ pub fn run_chat_with_events(
                 let mut results = Vec::new();
 
                 for call in calls {
+                    if cancel_flag.load(Ordering::SeqCst) {
+                        drop(stdin);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("已停止生成".to_string());
+                    }
+
                     let name = call["name"].as_str().unwrap_or("").to_string();
                     let args = call["args"].clone();
                     let id = call["id"].as_str().unwrap_or("").to_string();

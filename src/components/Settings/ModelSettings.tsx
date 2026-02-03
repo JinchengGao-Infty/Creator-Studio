@@ -67,6 +67,23 @@ export default function ModelSettings() {
         top_k: config.default_parameters.top_k,
         max_tokens: config.default_parameters.max_tokens,
       });
+
+      const activeId = config.active_provider_id ?? null;
+      const activeProvider = activeId ? (config.providers || []).find((p) => p.id === activeId) : null;
+      if (activeId && !(activeProvider?.models || []).length) {
+        setRefreshingModels(true);
+        message.loading({ content: "正在自动获取模型列表...", key: "models-auto", duration: 0 });
+        try {
+          const list = (await invoke("refresh_provider_models", { providerId: activeId })) as string[];
+          setModels(list || []);
+          message.success({ content: `已获取 ${(list || []).length} 个模型`, key: "models-auto" });
+          window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
+        } catch (error) {
+          message.warning({ content: `自动获取模型失败: ${formatError(error)}`, key: "models-auto" });
+        } finally {
+          setRefreshingModels(false);
+        }
+      }
     } catch (error) {
       message.error(`加载失败: ${formatError(error)}`);
     } finally {
@@ -89,8 +106,24 @@ export default function ModelSettings() {
   const handleProviderChange = async (providerId: string) => {
     try {
       await invoke("set_active_provider", { providerId });
-      await loadProviders();
+      const config = await loadProviders();
       form.setFieldsValue({ model: undefined });
+
+      const provider = config?.providers?.find((p) => p.id === providerId);
+      if (!provider?.models?.length) {
+        setRefreshingModels(true);
+        message.loading({ content: "正在自动获取模型列表...", key: "models-auto", duration: 0 });
+        try {
+          const list = (await invoke("refresh_provider_models", { providerId })) as string[];
+          setModels(list || []);
+          message.success({ content: `已获取 ${(list || []).length} 个模型`, key: "models-auto" });
+          window.dispatchEvent(new CustomEvent("creatorai:globalConfigChanged"));
+        } catch (error) {
+          message.warning({ content: `自动获取模型失败: ${formatError(error)}`, key: "models-auto" });
+        } finally {
+          setRefreshingModels(false);
+        }
+      }
     } catch (error) {
       message.error(`切换失败: ${formatError(error)}`);
     }

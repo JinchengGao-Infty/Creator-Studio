@@ -16,6 +16,8 @@
 .chapter-list-body {
   flex: 1;
   overflow: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .chapter-summary {
@@ -36,6 +38,7 @@
   min-height: 72px;
   max-height: 140px;
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;

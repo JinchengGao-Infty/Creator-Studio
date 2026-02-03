@@ -102,6 +102,18 @@ export default function ProviderSettings() {
           apiKey: values.api_key?.trim() ? values.api_key.trim() : null,
         });
         message.success("更新成功");
+
+        if (baseUrlChanged || typeChanged) {
+          message.loading({ content: "正在自动获取模型列表...", key: "models", duration: 0 });
+          try {
+            const models = (await invoke("refresh_provider_models", {
+              providerId: editingProvider.id,
+            })) as string[];
+            message.success({ content: `已获取 ${models.length} 个模型`, key: "models" });
+          } catch (error) {
+            message.warning({ content: `自动获取模型失败: ${formatError(error)}`, key: "models" });
+          }
+        }
       } else {
         const id = `provider_${Date.now()}`;
         const apiKey = values.api_key?.trim();
@@ -124,6 +136,16 @@ export default function ProviderSettings() {
         });
         await invoke("set_active_provider", { providerId: id });
         message.success("添加成功");
+
+        message.loading({ content: "正在自动获取模型列表...", key: "models", duration: 0 });
+        try {
+          const models = (await invoke("refresh_provider_models", {
+            providerId: id,
+          })) as string[];
+          message.success({ content: `已获取 ${models.length} 个模型`, key: "models" });
+        } catch (error) {
+          message.warning({ content: `自动获取模型失败: ${formatError(error)}`, key: "models" });
+        }
       }
 
       setModalVisible(false);

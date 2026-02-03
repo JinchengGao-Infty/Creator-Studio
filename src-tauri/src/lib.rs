@@ -31,6 +31,8 @@ use session::{
     rename_session, update_message_metadata, compact_session,
 };
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tauri::command]
@@ -258,11 +260,34 @@ fn save_summary_entry(
     summary::save_summary(Path::new(&project_path), chapter_id, summary)
 }
 
+#[derive(Default)]
+struct AiChatRuntime {
+    cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+#[tauri::command]
+fn ai_cancel(runtime: tauri::State<AiChatRuntime>) -> Result<(), String> {
+    let flag = runtime
+        .cancel_flag
+        .lock()
+        .map_err(|_| "ai_cancel lock poisoned".to_string())?
+        .clone();
+
+    match flag {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        None => Err("No running AI request".to_string()),
+    }
+}
+
 // ===== AI Chat Command =====
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_chat(
     app: tauri::AppHandle,
+    runtime: tauri::State<'_, AiChatRuntime>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
@@ -272,7 +297,6 @@ async fn ai_chat(
     chapter_id: Option<String>,
     allow_write: Option<bool>,
 ) -> Result<ai_bridge::ChatResponse, String> {
-    use std::sync::Arc;
     use tauri::Emitter;
 
     let request = ai_bridge::ChatRequest {
@@ -286,6 +310,18 @@ async fn ai_chat(
         allow_write: allow_write.unwrap_or(false),
     };
 
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_chat lock poisoned".to_string())?;
+        if let Some(prev) = guard.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        *guard = Some(cancel_flag.clone());
+    }
+
     let app_for_start = app.clone();
     let app_for_end = app.clone();
     let events = ai_bridge::ChatEventHandler {
@@ -297,13 +333,30 @@ async fn ai_chat(
         }),
     };
 
-    let response = tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::run_chat_with_events(request, Some(events))
+    let cancel_for_task = cancel_flag.clone();
+    let response = match tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::run_chat_with_events(request, Some(events), Some(cancel_for_task))
     })
-        .await
-        .map_err(|e| format!("ai_chat join error: {e}"))??;
+    .await
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("ai_chat join error: {e}")),
+    };
 
-    Ok(response)
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_chat lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
+        {
+            *guard = None;
+        }
+    }
+
+    response
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -311,6 +364,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(AiChatRuntime::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             get_config,
@@ -334,6 +388,7 @@ pub fn run() {
             load_summaries,
             get_latest_summary,
             save_summary_entry,
+            ai_cancel,
             ai_chat,
             get_recent_projects,
             add_recent_project,

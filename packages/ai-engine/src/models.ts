@@ -15,7 +15,17 @@ function joinURL(baseURL: string, path: string): string {
   return `${normalizedBase}${normalizedPath}`
 }
 
-export async function fetchModels(baseURL: string, apiKey: string): Promise<string[]> {
+function ensureV1(baseURL: string): string {
+  const trimmed = baseURL.replace(/\/+$/, '')
+  if (trimmed.endsWith('/v1')) return trimmed
+  return `${trimmed}/v1`
+}
+
+function uniqueSorted(items: string[]): string[] {
+  return Array.from(new Set(items.filter((m) => m && m.trim()).map((m) => m.trim()))).sort()
+}
+
+async function fetchModelsOnce(baseURL: string, apiKey: string): Promise<string[]> {
   const url = joinURL(baseURL, '/models')
 
   const response = await fetch(url, {
@@ -32,4 +42,20 @@ export async function fetchModels(baseURL: string, apiKey: string): Promise<stri
 
   const data: ModelsResponse = await response.json()
   return data.data.map((m) => m.id)
+}
+
+export async function fetchModels(baseURL: string, apiKey: string): Promise<string[]> {
+  const normalizedBaseURL = baseURL.trim()
+  try {
+    return uniqueSorted(await fetchModelsOnce(normalizedBaseURL, apiKey))
+  } catch (error) {
+    // Fallback: users often input a host without `/v1`, but OpenAI-compatible APIs expect `/v1/models`.
+    const message = error instanceof Error ? error.message : String(error)
+    const trimmed = normalizedBaseURL.replace(/\/+$/, '')
+    const hasV1 = trimmed.endsWith('/v1')
+    if (message.includes('404') && !hasV1) {
+      return uniqueSorted(await fetchModelsOnce(ensureV1(normalizedBaseURL), apiKey))
+    }
+    throw error
+  }
 }

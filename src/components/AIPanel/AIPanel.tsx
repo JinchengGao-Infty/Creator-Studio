@@ -748,6 +748,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       setSessions(refreshed);
     } catch (error) {
       const text = formatError(error);
+      if (/已停止生成|cancelled|canceled|aborted|取消/i.test(text)) {
+        message.info("已停止生成");
+        return;
+      }
       if (text.includes("请先在设置") || text.includes("Provider") || text.includes("模型")) {
         setConfigMissing(true);
       }
@@ -761,6 +765,18 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
 
   const handleSend = async (content: string) => {
     await sendMessage(content);
+  };
+
+  const handleStop = async () => {
+    if (!loading) return;
+    // Stop simulated streaming immediately (show final message faster).
+    streamTokenRef.current += 1;
+    if (!streamingContent) setStreamingContent("正在停止…");
+    try {
+      await invoke("ai_cancel");
+    } catch {
+      // ignore
+    }
   };
 
   const handleConfirmDraft = async (draft: PanelMessage) => {
@@ -891,7 +907,12 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         pendingToolCalls={pendingToolCalls}
       />
 
-      <ChatInput onSend={handleSend} disabled={busy || !currentSession} />
+      <ChatInput
+        onSend={handleSend}
+        onStop={() => void handleStop()}
+        generating={loading}
+        disabled={busy || !currentSession}
+      />
     </div>
   );
 }
