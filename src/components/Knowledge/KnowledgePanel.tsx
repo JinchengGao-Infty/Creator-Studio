@@ -82,7 +82,15 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   );
 
   const handleOpenPath = async (path: string) => {
-    if (!isTauri()) {
+    // 安全地检测是否在 Tauri 环境中
+    let isTauriEnv = false;
+    try {
+      isTauriEnv = isTauri();
+    } catch (error) {
+      isTauriEnv = false;
+    }
+    
+    if (!isTauriEnv) {
       message.info("当前为 Web 环境，无法直接打开本地目录。");
       return;
     }

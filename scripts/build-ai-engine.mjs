@@ -31,10 +31,13 @@ const outPath = path.join("src-tauri", "bin", `ai-engine-${target}${exeSuffix}`)
 
 mkdirSync(path.dirname(outPath), { recursive: true });
 
-run("bun", ["install", "--frozen-lockfile"], { cwd: path.join("packages", "ai-engine") });
+// 使用 npm 替代 bun
+run("npm", ["install", "--no-package-lock"], { cwd: path.join("packages", "ai-engine") });
 run(
-  "bun",
-  ["build", "src/cli.ts", "--compile", "--outfile", path.resolve(outPath)],
+  "npx",
+  ["tsup", "src/cli.ts", "--format", "esm", "--minify", "--dts", "--out-dir", "dist"],
   { cwd: path.join("packages", "ai-engine") },
 );
 
+// 复制编译后的文件到目标位置
+run("cp", [path.join("packages", "ai-engine", "dist", "cli.js"), outPath]);

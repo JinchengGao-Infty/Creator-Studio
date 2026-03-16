@@ -87,7 +87,17 @@ export default function App() {
 
   useEffect(() => {
     if (!currentProject) return;
-    if (!isTauri()) return;
+    
+    // 安全地检测是否在 Tauri 环境中
+    let isTauriEnv = false;
+    try {
+      isTauriEnv = isTauri();
+    } catch (error) {
+      // 在浏览器环境中，isTauri() 可能会抛出错误
+      isTauriEnv = false;
+    }
+    
+    if (!isTauriEnv) return;
 
     let unlisten: (() => void) | null = null;
     const setup = async () => {
@@ -113,7 +123,16 @@ export default function App() {
 
   const confirmDiscardUnsaved = async (actionText: string) => {
     if (!hasUnsavedChanges) return true;
-    if (isTauri()) {
+    
+    // 安全地检测是否在 Tauri 环境中
+    let isTauriEnv = false;
+    try {
+      isTauriEnv = isTauri();
+    } catch (error) {
+      isTauriEnv = false;
+    }
+    
+    if (isTauriEnv) {
       return confirm(`当前章节有未保存的更改，${actionText}将丢失这些更改。是否继续？`, {
         title: "未保存更改",
         kind: "warning",
@@ -145,13 +164,29 @@ export default function App() {
 
   const handleOpenProjectDialog = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "选择项目文件夹",
-      });
-      if (typeof selected === "string" && selected.trim()) {
-        await openProject(selected);
+      // 安全地检测是否在 Tauri 环境中
+      let isTauriEnv = false;
+      try {
+        isTauriEnv = isTauri();
+      } catch (error) {
+        isTauriEnv = false;
+      }
+      
+      if (isTauriEnv) {
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: "选择项目文件夹",
+        });
+        if (typeof selected === "string" && selected.trim()) {
+          await openProject(selected);
+        }
+      } else {
+        // 在浏览器环境中，提示用户手动输入路径
+        const userInput = prompt("当前为 Web 环境，请手动输入项目文件夹路径：");
+        if (userInput && userInput.trim()) {
+          await openProject(userInput.trim());
+        }
       }
     } catch (error) {
       message.error(`打开失败: ${formatError(error)}`);
