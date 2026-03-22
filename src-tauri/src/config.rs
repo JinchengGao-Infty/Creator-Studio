@@ -8,7 +8,6 @@ const BUILTIN_DEMO_PROVIDER_ID: &str = "builtin_dashscope_qwen_demo";
 const BUILTIN_DEMO_PROVIDER_NAME: &str = "DashScope Qwen Demo";
 const BUILTIN_DEMO_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const BUILTIN_DEMO_MODEL: &str = "qwen-plus";
-const BUILTIN_DEMO_API_KEY: &str = "sk-762e517f6fa74eebb5b0b2f10d837508";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -124,7 +123,7 @@ fn is_legacy_glm_provider(provider: &Provider) -> bool {
         || provider.name.trim().eq_ignore_ascii_case("glm-4.7")
 }
 
-fn ensure_builtin_demo_provider(config: &mut GlobalConfig, seed_keyring: bool) -> bool {
+fn ensure_builtin_demo_provider(config: &mut GlobalConfig, cleanup_keyring: bool) -> bool {
     let mut changed = false;
 
     let legacy_active_provider_id = config.active_provider_id.clone().filter(|id| {
@@ -170,18 +169,9 @@ fn ensure_builtin_demo_provider(config: &mut GlobalConfig, seed_keyring: bool) -
         changed = true;
     }
 
-    if seed_keyring {
+    if cleanup_keyring {
         let _ = crate::keyring_store::delete_api_key(LEGACY_GLM_DEMO_PROVIDER_ID);
-        if crate::keyring_store::get_api_key(BUILTIN_DEMO_PROVIDER_ID)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            let _ = crate::keyring_store::store_api_key(
-                BUILTIN_DEMO_PROVIDER_ID,
-                BUILTIN_DEMO_API_KEY,
-            );
-        }
+        let _ = crate::keyring_store::purge_leaked_builtin_demo_key();
     }
 
     changed

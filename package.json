@@ -11,6 +11,7 @@
     "test:editor-e2e": "playwright test",
     "test:default-provider": "node test-suite/run.mjs default-provider",
     "test:editor-shortcuts": "node test-suite/run.mjs editor-shortcuts",
+    "test:no-hardcoded-secrets": "node test-suite/run.mjs no-hardcoded-secrets",
     "test:regression": "node test-suite/run.mjs regression",
     "test:windows-demo": "node test-suite/run.mjs windows-demo",
     "tauri": "tauri",

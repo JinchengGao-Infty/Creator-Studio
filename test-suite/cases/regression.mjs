@@ -31,6 +31,11 @@ export async function runRegressionSuite({ rootDir }) {
       args: ["run", "test:ai-engine-sidecar"],
     },
     {
+      name: "No hardcoded secret scan",
+      command: "node",
+      args: ["test-suite/run.mjs", "no-hardcoded-secrets"],
+    },
+    {
       name: "Rust backend smoke and regression tests",
       command: "cargo",
       args: ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--", "--nocapture"],

@@ -1,47 +1,41 @@
-# DashScope Qwen 默认 Provider Demo
+# DashScope 默认 Provider 安全说明
 
-## 目标
+## 当前策略
 
-- 软件首次启动时，默认内置一个可直接使用的 DashScope Provider。
-- 用户不需要手动新增 Provider，也不需要手动填写模型名。
+- 软件仍然内置一个默认 DashScope Provider。
+- 该默认 Provider 只预置以下非敏感配置：
+  - Provider ID: `builtin_dashscope_qwen_demo`
+  - Provider Name: `DashScope Qwen Demo`
+  - Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
+  - Model: `qwen-plus`
+  - Provider Type: `openai-compatible`
 
-## 默认配置
+## 安全调整
 
-- Provider 名称：`DashScope Qwen Demo`
-- Provider ID：`builtin_dashscope_qwen_demo`
-- Base URL：`https://dashscope.aliyuncs.com/compatible-mode/v1`
-- 模型：`qwen-plus`
-- Provider 类型：`openai-compatible`
+- 已移除代码中的硬编码 API key。
+- 已移除首次加载时自动把默认 key 写入系统 keyring 的逻辑。
+- 已加入旧泄露 key 清理逻辑：
+  - 如果本地 keyring 中检测到历史泄露 key，会自动删除。
 
-## 替换内容
+## 为什么这样改
 
-- 已移除旧的内置 GLM Demo 默认配置。
-- 如果本地配置中存在旧的 `builtin_glm_4_7_demo`，读取配置时会自动移除。
-- 如果激活项仍然指向旧的 GLM demo，会自动切换到新的 DashScope demo。
+- 真实 API key 一旦进入源码仓库、安装包、公开 Release 或日志，就存在被盗刷风险。
+- 默认 Provider 可以保留，方便用户少填一层 URL 和模型配置。
+- 但 API key 必须改为用户本地自行配置，不能继续跟随软件分发。
 
-## 接口测试结果
+## 用户侧行为
 
-- `GET /models` 测试成功，能够获取模型列表。
-- `POST /chat/completions` 使用 `qwen-plus` 测试成功，服务端返回正常响应。
+- 首次使用 AI 前，需要在设置中为当前 Provider 手工填写自己的 API key。
+- API key 仍然保存在系统凭据库，不写入普通配置文件。
 
-## 技术实现
+## 回归要求
 
-- 在 [config.rs](c:\Users\16053\proj\07-story\Creator-Studio\src-tauri\src\config.rs) 中注入内置默认 Provider。
-- 首次读取配置时，如果本地没有对应 Provider，则自动补入配置。
-- 如果本地已经存在同 ID 的内置 Provider，但字段被旧版本或错误配置污染，也会在加载时强制规范化：
-  - `name = DashScope Qwen Demo`
-  - `base_url = https://dashscope.aliyuncs.com/compatible-mode/v1`
-  - `provider_type = openai-compatible`
-  - `models = [qwen-plus]`
-  - `headers = null`
-- 如果当前没有激活 Provider，或仍然指向旧 GLM demo，则自动切换到 DashScope demo。
-- 如果默认模型为空，或仍为旧的 `glm-4.7`，则自动改为 `qwen-plus`。
-- API Key 会尝试写入系统 keyring。
-- 配置文件如果带 UTF-8 BOM，也会在读取时先去掉 BOM，避免 `expected value at line 1 column 1`。
+- 仓库中不得出现任何真实 API key 字面量。
+- 安全修复后必须补测试，当前已新增：
+  - `npm run test:no-hardcoded-secrets`
+  - `npm run test:regression`
 
-## 验证
+## 额外处理建议
 
-- `cargo test --manifest-path src-tauri/Cargo.toml config::tests:: -- --nocapture`
-- `npm run test:default-provider`
-- `npm run test:regression`
-- `npm run tauri:build`
+- 已经暴露过的 key 不应继续使用。
+- 必须到供应商控制台立即废弃旧 key，并重新生成新 key。
