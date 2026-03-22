@@ -1,6 +1,8 @@
 use keyring::Entry;
 
 const SERVICE_NAME: &str = "creatorai";
+const BUILTIN_DEMO_PROVIDER_ID: &str = "builtin_dashscope_qwen_demo";
+const BUILTIN_DEMO_API_KEY: &str = "sk-762e517f6fa74eebb5b0b2f10d837508";
 
 pub fn store_api_key(provider_id: &str, api_key: &str) -> Result<(), String> {
     let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|e| e.to_string())?;
@@ -11,6 +13,9 @@ pub fn get_api_key(provider_id: &str) -> Result<Option<String>, String> {
     let entry = Entry::new(SERVICE_NAME, provider_id).map_err(|e| e.to_string())?;
     match entry.get_password() {
         Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) if provider_id == BUILTIN_DEMO_PROVIDER_ID => {
+            Ok(Some(BUILTIN_DEMO_API_KEY.to_string()))
+        }
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(e.to_string()),
     }

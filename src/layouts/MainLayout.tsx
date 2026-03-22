@@ -413,6 +413,8 @@ export default function MainLayout({
         chapterId: currentChapterId,
         content,
       });
+      setChapterContent(content);
+      setDraftContent(content);
     },
     [projectPath, currentChapterId],
   );

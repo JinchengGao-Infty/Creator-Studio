@@ -32,10 +32,74 @@ use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
     rename_session, update_message_metadata, compact_session,
 };
+use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+fn clear_dir_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_dir_all(path)
+        .map_err(|e| format!("Failed to remove '{}': {e}", path.display()))
+}
+
+fn clear_file_if_exists(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_file(path)
+        .map_err(|e| format!("Failed to remove '{}': {e}", path.display()))
+}
+
+fn install_cleanup_marker_path() -> Result<std::path::PathBuf, String> {
+    Ok(config::get_global_config_dir()?.join("ui_cleanup_pending"))
+}
+
+fn cleanup_reinstall_state_if_needed() -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
+    let config_dir = config::get_global_config_dir()?;
+    let marker_path = config_dir.join("install_version.txt");
+    let current_version = env!("CARGO_PKG_VERSION");
+    let previous_version = fs::read_to_string(&marker_path).unwrap_or_default();
+    if previous_version.trim() == current_version {
+        return Ok(());
+    }
+
+    clear_file_if_exists(&config_dir.join("recent.json"))?;
+
+    if let Some(roaming) = dirs::data_dir() {
+        clear_dir_if_exists(&roaming.join("creatorai"))?;
+        clear_dir_if_exists(&roaming.join("com.link.creatorai-v2"))?;
+    }
+
+    if let Some(local) = dirs::data_local_dir() {
+        clear_dir_if_exists(&local.join("com.link.creatorai-v2"))?;
+    }
+
+    fs::write(install_cleanup_marker_path()?, b"pending\n")
+        .map_err(|e| format!("Failed to write UI cleanup marker: {e}"))?;
+
+    fs::write(&marker_path, format!("{current_version}\n"))
+        .map_err(|e| format!("Failed to write install marker: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn consume_ui_cleanup_flag() -> Result<bool, String> {
+    let marker = install_cleanup_marker_path()?;
+    if !marker.exists() {
+        return Ok(false);
+    }
+    fs::remove_file(&marker)
+        .map_err(|e| format!("Failed to remove UI cleanup marker: {e}"))?;
+    Ok(true)
+}
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -485,6 +549,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|_| {
+            cleanup_reinstall_state_if_needed()?;
+            config::load_config()
+                .map(|_| ())
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+        })
         .manage(AiChatRuntime::default())
         .manage(AiCompleteRuntime::default())
         .invoke_handler(tauri::generate_handler![
@@ -544,6 +614,7 @@ pub fn run() {
             add_message,
             update_message_metadata,
             compact_session,
+            consume_ui_cleanup_flag,
             preview_import_txt,
             import_txt
         ])
@@ -781,6 +852,54 @@ mod tests {
         assert_eq!(chapters2.len(), 1);
         assert_eq!(chapters2[0].id, "chapter_001");
         assert_eq!(chapters2[0].order, 1);
+    }
+
+    #[test]
+    fn chapter_save_persists_latest_content_across_multiple_writes() {
+        let temp = TempDir::new("creatorai-v2-chapter-save");
+        let project_root = temp.path.join("MyNovel");
+        let project_path = project_root.to_string_lossy().to_string();
+
+        tauri::async_runtime::block_on(create_project(
+            project_path.clone(),
+            "Test Novel".to_string(),
+        ))
+        .expect("create_project");
+
+        let chapter = tauri::async_runtime::block_on(create_chapter(
+            project_path.clone(),
+            "Chapter 1".to_string(),
+        ))
+        .expect("create_chapter");
+
+        tauri::async_runtime::block_on(save_chapter_content(
+            project_path.clone(),
+            chapter.id.clone(),
+            "first draft".to_string(),
+        ))
+        .expect("save first draft");
+
+        tauri::async_runtime::block_on(save_chapter_content(
+            project_path.clone(),
+            chapter.id.clone(),
+            "first draft\nsecond line\nfinal paragraph".to_string(),
+        ))
+        .expect("save second draft");
+
+        let reloaded = tauri::async_runtime::block_on(get_chapter_content(
+            project_path.clone(),
+            chapter.id.clone(),
+        ))
+        .expect("reload chapter content");
+        assert_eq!(reloaded, "first draft\nsecond line\nfinal paragraph");
+
+        let listed =
+            tauri::async_runtime::block_on(list_chapters(project_path.clone())).expect("list");
+        let saved_meta = listed
+            .iter()
+            .find(|item| item.id == chapter.id)
+            .expect("saved chapter metadata");
+        assert_eq!(saved_meta.word_count, "first draft\nsecond line\nfinal paragraph".chars().filter(|c| !c.is_whitespace()).count() as u32);
     }
 
     #[test]

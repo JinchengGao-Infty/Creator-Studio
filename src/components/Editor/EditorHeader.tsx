@@ -25,7 +25,7 @@ export default function EditorHeader({
         <Tooltip title="撤销 (Ctrl+Z)">
           <Button type="text" icon={<UndoOutlined />} disabled={!canUndo} onClick={onUndo} />
         </Tooltip>
-        <Tooltip title="重做 (Ctrl+Shift+Z)">
+        <Tooltip title="重做 (Ctrl+Y / Ctrl+Shift+Z)">
           <Button type="text" icon={<RedoOutlined />} disabled={!canRedo} onClick={onRedo} />
         </Tooltip>
         <span className="editor-word-count">{wordCount.toLocaleString()} 字</span>
@@ -33,4 +33,3 @@ export default function EditorHeader({
     </div>
   );
 }
-
