@@ -81,9 +81,13 @@ fn current_exe_dir() -> Option<PathBuf> {
 
 fn find_ai_engine_in_dir(dir: &Path) -> Option<PathBuf> {
     let direct_names = if cfg!(windows) {
-        vec!["ai-engine.exe".to_string(), "ai-engine".to_string()]
+        vec![
+            "ai-engine.js".to_string(),
+            "ai-engine.exe".to_string(),
+            "ai-engine".to_string(),
+        ]
     } else {
-        vec!["ai-engine".to_string()]
+        vec!["ai-engine.js".to_string(), "ai-engine".to_string()]
     };
 
     for name in direct_names {
@@ -110,6 +114,7 @@ fn find_ai_engine_in_dir(dir: &Path) -> Option<PathBuf> {
 fn find_bundled_ai_engine() -> Option<PathBuf> {
     let exe_dir = current_exe_dir()?;
     let candidates = [
+        exe_dir.join("bin"),
         exe_dir.clone(),
         exe_dir.join("../Resources"),
         exe_dir.join("../Resources/bin"),
@@ -187,8 +192,16 @@ fn is_script_path(path: &Path) -> bool {
 
 fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
     let mut cmd = if is_script_path(path) {
-        let mut c = Command::new("bun");
-        c.arg("run").arg(path);
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or_default();
+        let mut c = if extension == "js" {
+            let mut node = Command::new("node");
+            node.arg(path);
+            node
+        } else {
+            let mut bun = Command::new("bun");
+            bun.arg("run").arg(path);
+            bun
+        };
 
         // For script execution, keep a stable cwd (prefer repo root when available).
         if let Some(root) = dev_repo_root_dir().filter(|p| p.exists()) {
@@ -203,13 +216,27 @@ fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    cmd
         .spawn()
         .map_err(|e| {
             if is_script_path(path) && matches!(e.kind(), std::io::ErrorKind::NotFound) {
+                let runtime = if path.extension().and_then(|s| s.to_str()) == Some("js") {
+                    "node"
+                } else {
+                    "bun"
+                };
                 return format!(
-                    "Failed to spawn ai-engine: {e}. `bun` is required to run `{}`. Install Bun or build the bundled sidecar via `npm run ai-engine:build`.",
-                    path.display()
+                    "Failed to spawn ai-engine: {e}. `{runtime}` is required to run `{}`. Install the runtime or build the bundled sidecar via `npm run ai-engine:build`.",
+                    path.display(),
                 );
             }
             format!("Failed to spawn ai-engine: {e}")
@@ -964,10 +991,28 @@ mod tests {
         fs::write(root.join("chapters/index.json"), format!("{json}\n")).unwrap();
     }
 
-    const MOCK_AI_ENGINE_CLI: &str = r#"#!/usr/bin/env bun
-const stdinReader = Bun.stdin.stream().getReader();
-const decoder = new TextDecoder();
+    const MOCK_AI_ENGINE_CLI: &str = r#"#!/usr/bin/env node
 let stdinBuffer = "";
+let stdinEnded = false;
+let wakeReader = null;
+
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  stdinBuffer += chunk;
+  if (wakeReader) {
+    const resolve = wakeReader;
+    wakeReader = null;
+    resolve();
+  }
+});
+process.stdin.on("end", () => {
+  stdinEnded = true;
+  if (wakeReader) {
+    const resolve = wakeReader;
+    wakeReader = null;
+    resolve();
+  }
+});
 
 async function readJsonFromStdin() {
   while (true) {
@@ -979,11 +1024,12 @@ async function readJsonFromStdin() {
       return JSON.parse(line);
     }
 
-    const { done, value } = await stdinReader.read();
-    if (done) {
+    if (stdinEnded) {
       throw new Error("EOF before complete JSON");
     }
-    stdinBuffer += decoder.decode(value, { stream: true });
+    await new Promise((resolve) => {
+      wakeReader = resolve;
+    });
   }
 }
 
@@ -1096,7 +1142,7 @@ main().catch((err) => {
     fn ensure_mock_ai_engine_cli() {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
         let path = PATH.get_or_init(|| {
-            let p = std::env::temp_dir().join("creatorai-v2-mock-ai-engine-cli.ts");
+            let p = std::env::temp_dir().join("creatorai-v2-mock-ai-engine-cli.js");
             if let Ok(existing) = fs::read_to_string(&p) {
                 if existing == MOCK_AI_ENGINE_CLI {
                     return p;
@@ -1288,5 +1334,58 @@ main().catch((err) => {
         );
         let after = fs::read_to_string(temp.path.join("chapters/chapter_003.txt")).unwrap();
         assert_eq!(after, "hello\n");
+    }
+
+    #[test]
+    fn finds_ai_engine_in_installed_bin_directory() {
+        let temp = TempDir::new("creatorai-v2-ai-engine-installed-layout");
+        let install_dir = temp.path.join("CreatorAI");
+        let bin_dir = install_dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let engine_path = bin_dir.join(if cfg!(windows) {
+            "ai-engine.js"
+        } else {
+            "ai-engine"
+        });
+        fs::write(&engine_path, "test").unwrap();
+
+        let found = find_ai_engine_in_dir(&bin_dir).expect("should find engine in bin dir");
+        assert_eq!(found, engine_path);
+    }
+
+    #[test]
+    fn bundled_lookup_prefers_installed_bin_over_root_fake_exe() {
+        let temp = TempDir::new("creatorai-v2-ai-engine-installed-priority");
+        let install_dir = temp.path.join("CreatorAI");
+        let bin_dir = install_dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let root_fake_exe = install_dir.join(if cfg!(windows) {
+            "ai-engine.exe"
+        } else {
+            "ai-engine"
+        });
+        fs::write(&root_fake_exe, "fake").unwrap();
+
+        let bin_js = bin_dir.join("ai-engine.js");
+        fs::write(&bin_js, "real").unwrap();
+
+        let found_root = find_ai_engine_in_dir(&install_dir).expect("should find root engine");
+        assert_eq!(found_root, root_fake_exe);
+
+        let candidates = [
+            install_dir.join("bin"),
+            install_dir.clone(),
+            install_dir.join("../Resources"),
+            install_dir.join("../Resources/bin"),
+            install_dir.join("../MacOS"),
+            install_dir.join("../bin"),
+        ];
+
+        let found = candidates
+            .iter()
+            .find_map(|dir| find_ai_engine_in_dir(dir))
+            .expect("should find installed sidecar");
+        assert_eq!(found, bin_js);
     }
 }

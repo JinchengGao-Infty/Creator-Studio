@@ -28,6 +28,13 @@ function joinPath(parent: string, child: string): string {
   return `${trimmedParent}${separator}${child}`;
 }
 
+async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauri()) {
+    throw new Error("当前为浏览器模式，文件系统能力不可用。请使用 npm run tauri:dev 并在桌面窗口中操作。");
+  }
+  return invoke<T>(command, args);
+}
+
 export default function App() {
   const { theme, toggle } = useTheme();
   const [currentProject, setCurrentProject] = useState<{ path: string; config: ProjectConfig } | null>(
@@ -39,8 +46,12 @@ export default function App() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const loadRecentProjects = async () => {
+    if (!isTauri()) {
+      setRecentProjects([]);
+      return;
+    }
     try {
-      const recent = (await invoke("get_recent_projects")) as RecentProject[];
+      const recent = await tauriInvoke<RecentProject[]>("get_recent_projects");
       setRecentProjects(recent || []);
     } catch {
       setRecentProjects([]);
@@ -49,6 +60,33 @@ export default function App() {
 
   useEffect(() => {
     void loadRecentProjects();
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const clearUiStateIfNeeded = async () => {
+      try {
+        const shouldClear = await tauriInvoke<boolean>("consume_ui_cleanup_flag");
+        if (!shouldClear) return;
+
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i += 1) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("creatorai:")) {
+            keysToRemove.push(key);
+          }
+        }
+        for (const key of keysToRemove) {
+          localStorage.removeItem(key);
+        }
+        sessionStorage.clear();
+      } catch {
+        // ignore cleanup failures to avoid blocking app startup
+      }
+    };
+
+    void clearUiStateIfNeeded();
   }, []);
 
   useEffect(() => {
@@ -87,7 +125,17 @@ export default function App() {
 
   useEffect(() => {
     if (!currentProject) return;
-    if (!isTauri()) return;
+    
+    // 安全地检测是否在 Tauri 环境中
+    let isTauriEnv = false;
+    try {
+      isTauriEnv = isTauri();
+    } catch (error) {
+      // 在浏览器环境中，isTauri() 可能会抛出错误
+      isTauriEnv = false;
+    }
+    
+    if (!isTauriEnv) return;
 
     let unlisten: (() => void) | null = null;
     const setup = async () => {
@@ -113,7 +161,16 @@ export default function App() {
 
   const confirmDiscardUnsaved = async (actionText: string) => {
     if (!hasUnsavedChanges) return true;
-    if (isTauri()) {
+    
+    // 安全地检测是否在 Tauri 环境中
+    let isTauriEnv = false;
+    try {
+      isTauriEnv = isTauri();
+    } catch (error) {
+      isTauriEnv = false;
+    }
+    
+    if (isTauriEnv) {
       return confirm(`当前章节有未保存的更改，${actionText}将丢失这些更改。是否继续？`, {
         title: "未保存更改",
         kind: "warning",
@@ -130,10 +187,10 @@ export default function App() {
     setProjectBusy(true);
     message.loading({ content: "正在打开项目...", key: "project" });
     try {
-      const config = (await invoke("open_project", { path })) as ProjectConfig;
+      const config = await tauriInvoke<ProjectConfig>("open_project", { path });
       setCurrentProject({ path, config });
       setHasUnsavedChanges(false);
-      await invoke("add_recent_project", { name: config.name, path });
+      await tauriInvoke("add_recent_project", { name: config.name, path });
       await loadRecentProjects();
       message.success({ content: `已打开项目：${config.name}`, key: "project" });
     } catch (error) {
@@ -145,13 +202,29 @@ export default function App() {
 
   const handleOpenProjectDialog = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "选择项目文件夹",
-      });
-      if (typeof selected === "string" && selected.trim()) {
-        await openProject(selected);
+      // 安全地检测是否在 Tauri 环境中
+      let isTauriEnv = false;
+      try {
+        isTauriEnv = isTauri();
+      } catch (error) {
+        isTauriEnv = false;
+      }
+      
+      if (isTauriEnv) {
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: "选择项目文件夹",
+        });
+        if (typeof selected === "string" && selected.trim()) {
+          await openProject(selected);
+        }
+      } else {
+        // 在浏览器环境中，提示用户手动输入路径
+        const userInput = prompt("当前为 Web 环境，请手动输入项目文件夹路径：");
+        if (userInput && userInput.trim()) {
+          await openProject(userInput.trim());
+        }
       }
     } catch (error) {
       message.error(`打开失败: ${formatError(error)}`);
@@ -171,13 +244,13 @@ export default function App() {
     setProjectBusy(true);
     message.loading({ content: "正在创建项目...", key: "project" });
     try {
-      const config = (await invoke("create_project", {
+      const config = await tauriInvoke<ProjectConfig>("create_project", {
         path: projectPath,
         name: trimmedName,
-      })) as ProjectConfig;
+      });
       setCurrentProject({ path: projectPath, config });
       setHasUnsavedChanges(false);
-      await invoke("add_recent_project", { name: config.name, path: projectPath });
+      await tauriInvoke("add_recent_project", { name: config.name, path: projectPath });
       await loadRecentProjects();
       setCreateProjectModalOpen(false);
       message.success({ content: `项目已创建：${config.name}`, key: "project" });

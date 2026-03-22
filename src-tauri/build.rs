@@ -1,12 +1,33 @@
+use std::process::Command;
+use std::path::PathBuf;
+
 fn main() {
+    // Ensure AI engine sidecar is available
     ensure_ai_engine_sidecar();
-    tauri_build::build()
+
+    // Set minimum macOS version requirement for MLComputePlan symbol
+    if cfg!(target_os = "macos") {
+        println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=13.3");
+        println!("cargo:rustc-link-arg=-mmacosx-version-min=13.3");
+        
+        // Additional linker args for Apple Silicon
+        if cfg!(target_arch = "aarch64") {
+            println!("cargo:rustc-link-arg=-stdlib=libc++");
+        }
+
+        // Link required frameworks
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=CoreML");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        
+        // Add weak linking for MLCompute framework to resolve MLComputePlan symbol issues
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,MLCompute");
+    }
+
+    tauri_build::build();
 }
 
 fn ensure_ai_engine_sidecar() {
-    use std::path::PathBuf;
-    use std::process::Command;
-
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let target = std::env::var("TARGET").unwrap_or_default();
     if manifest_dir.as_os_str().is_empty() || target.trim().is_empty() {

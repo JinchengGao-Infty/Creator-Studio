@@ -1,0 +1,11 @@
+{
+  "name": "creatorai-test-suite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "editor-e2e": "playwright test",
+    "editor-shortcuts": "node run.mjs editor-shortcuts",
+    "regression": "node run.mjs regression",
+    "windows-demo": "node run.mjs windows-demo"
+  }
+}

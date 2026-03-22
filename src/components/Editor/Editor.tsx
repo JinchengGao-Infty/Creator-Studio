@@ -1,6 +1,6 @@
 import { Empty, message } from "antd";
 import { invoke } from "@tauri-apps/api/core";
-import { EditorState, type Extension } from "@codemirror/state";
+import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { history, historyKeymap, indentWithTab, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 import {
@@ -40,9 +40,18 @@ export interface EditorProps {
   chapterId: string | null;
   chapterTitle: string;
   initialContent: string;
+  disableInlineCompletion?: boolean;
   onChange: (content: string) => void;
   onSave: (content: string) => Promise<void>;
   onSaveStatusChange?: (status: SaveStatus) => void;
+}
+
+const saveErrorMessage = "保存失败，请稍后重试。";
+
+function runSaveShortcut(save: () => Promise<void>) {
+  void save().catch(() => {
+    message.error(saveErrorMessage);
+  });
 }
 
 function Editor({
@@ -50,6 +59,7 @@ function Editor({
   chapterId,
   chapterTitle,
   initialContent,
+  disableInlineCompletion = false,
   onChange,
   onSave,
   onSaveStatusChange,
@@ -141,9 +151,11 @@ function Editor({
       const selection = view.state.selection.main;
       if (!selection.empty) return;
 
-      completionTimerRef.current = window.setTimeout(() => {
-        void requestCompletion(view);
-      }, 700);
+      if (!disableInlineCompletion) {
+        completionTimerRef.current = window.setTimeout(() => {
+          void requestCompletion(view);
+        }, 700);
+      }
     };
 
     const requestCompletion = async (view: EditorView) => {
@@ -202,6 +214,32 @@ function Editor({
       inlineCompletionTheme,
       keymap.of([
         {
+          key: "Mod-z",
+          run: undo,
+          preventDefault: true,
+        },
+        {
+          key: "Mod-Shift-z",
+          run: redo,
+          preventDefault: true,
+        },
+        {
+          win: "Ctrl-y",
+          linux: "Ctrl-y",
+          run: redo,
+          preventDefault: true,
+        },
+        {
+          key: "Mod-a",
+          run: (view) => {
+            view.dispatch({
+              selection: EditorSelection.single(0, view.state.doc.length),
+            });
+            return true;
+          },
+          preventDefault: true,
+        },
+        {
           key: "Tab",
           run: (view) => {
             return acceptInlineCompletion(view);
@@ -226,6 +264,14 @@ function Editor({
             void saveRef.current().catch(() => {
               message.error("保存失败，请稍后重试。");
             });
+            return true;
+          },
+        },
+        {
+          win: "Ctrl-Shift-s",
+          linux: "Ctrl-Shift-s",
+          run: () => {
+            runSaveShortcut(saveRef.current);
             return true;
           },
         },
@@ -302,7 +348,7 @@ function Editor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [chapterId, projectPath]);
+  }, [chapterId, projectPath, disableInlineCompletion]);
 
   useEffect(() => {
     if (!chapterId) return;

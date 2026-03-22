@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Form, Input, Modal, message } from "antd";
 import { formatError } from "../../utils/error";
@@ -18,13 +19,28 @@ export default function CreateProjectModal({ visible, onCancel, onCreate }: Crea
 
   const handleSelectPath = async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "选择保存位置",
-      });
-      if (typeof selected === "string" && selected.trim()) {
-        form.setFieldValue("path", selected);
+      // 安全地检测是否在 Tauri 环境中
+      let isTauriEnv = false;
+      try {
+        isTauriEnv = isTauri();
+      } catch (error) {
+        isTauriEnv = false;
+      }
+      
+      if (isTauriEnv) {
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: "选择保存位置",
+        });
+        if (typeof selected === "string" && selected.trim()) {
+          form.setFieldValue("path", selected);
+        }
+      } else {
+        // 在浏览器环境中，提示用户手动输入路径
+        message.info("当前为 Web 环境，请手动输入项目保存路径");
+        // 可以考虑使用浏览器的文件夹选择（但浏览器不支持直接选择文件夹）
+        // 这里让用户手动输入路径
       }
     } catch (error) {
       message.error(`选择失败: ${formatError(error)}`);
@@ -59,10 +75,9 @@ export default function CreateProjectModal({ visible, onCancel, onCreate }: Crea
           rules={[{ required: true, message: "请选择保存位置" }]}
         >
           <Input.Search
-            placeholder="选择文件夹"
+            placeholder="选择文件夹或手动输入路径"
             enterButton="选择"
             onSearch={() => void handleSelectPath()}
-            readOnly
           />
         </Form.Item>
       </Form>

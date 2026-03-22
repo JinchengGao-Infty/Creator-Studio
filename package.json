@@ -1,16 +1,23 @@
 {
   "name": "creatorai-v2",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.15",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:ai-engine-sidecar": "node test-suite/run.mjs ai-engine-sidecar",
+    "test:editor-e2e": "playwright test",
+    "test:default-provider": "node test-suite/run.mjs default-provider",
+    "test:editor-shortcuts": "node test-suite/run.mjs editor-shortcuts",
+    "test:no-hardcoded-secrets": "node test-suite/run.mjs no-hardcoded-secrets",
+    "test:regression": "node test-suite/run.mjs regression",
+    "test:windows-demo": "node test-suite/run.mjs windows-demo",
     "tauri": "tauri",
     "ai-engine:build": "node scripts/build-ai-engine.mjs",
     "tauri:dev": "npm run ai-engine:build && tauri dev",
-    "tauri:build": "npm run ai-engine:build && CI=true tauri build"
+    "tauri:build": "npm run ai-engine:build && tauri build && node scripts/copy-release-artifacts.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
@@ -26,11 +33,12 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tauri-apps/cli": "2.10.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^5.4.10"
   }
 }
