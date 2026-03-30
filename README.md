@@ -80,7 +80,21 @@ npm run test:regression
 
 ## 打包
 
-### 本地构建
+### 跨平台构建
+
+Tauri 支持多平台打包，但构建需要在目标平台进行：
+
+| 平台 | 构建命令 | 产物 |
+|------|----------|------|
+| **Windows** | `npm run tauri:build:win` | `*.msi`, `*-setup.exe` |
+| **macOS** | `npm run tauri:build:mac` | `*.dmg`, `*.app` |
+| **Linux** | `npm run tauri:build:linux` | `*.appimage`, `*.deb`, `*.rpm` |
+| **全部平台** | `npm run tauri:build:all` | 交叉编译所有目标 |
+
+> ⚠️ **注意**：交叉编译需要安装对应平台的 Rust 工具链。
+> 推荐在目标平台进行构建以确保兼容性。
+
+### 本地构建（当前平台）
 
 ```bash
 npm run tauri:build
@@ -91,13 +105,36 @@ npm run tauri:build
 - 执行 Tauri release build
 - 将最终安装包同步复制到项目根目录 `release/`
 
-### Tauri 实际输出目录
+### 指定目标平台
 
-Tauri 原始 bundle 输出目录不是根目录 `release/`，而是：
+```bash
+# Windows x64
+npm run tauri:build -- --target x86_64-pc-windows-msvc
 
-- `src-tauri/target/release/bundle/msi/`
-- `src-tauri/target/release/bundle/nsis/`
-- macOS 对应 `src-tauri/target/release/bundle/dmg/`
+# macOS ARM64
+npm run tauri:build -- --target aarch64-apple-darwin
+
+# macOS Intel
+npm run tauri:build -- --target x86_64-apple-darwin
+
+# Linux
+npm run tauri:build -- --target x86_64-unknown-linux-gnu
+```
+
+### Tauri 原始输出目录
+
+Tauri bundle 输出位置：
+
+```
+src-tauri/target/release/bundle/
+├── msi/           # Windows MSI 安装包
+├── nsis/          # Windows NSIS 安装包
+├── dmg/           # macOS DMG 镜像
+├── app/           # macOS App Bundle
+├── appimage/      # Linux AppImage
+├── deb/           # Debian/Ubuntu 包
+└── rpm/           # Fedora/RHEL 包
+```
 
 项目根目录 `release/` 的作用是：
 
