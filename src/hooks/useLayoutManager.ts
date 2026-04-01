@@ -8,10 +8,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const ACTIVITY_BAR_WIDTH = 48;
 const RESIZER_WIDTH = 6;
-const EDITOR_MIN_WIDTH = 360;
+const EDITOR_MIN_WIDTH = 300;
 const SIDEBAR_DEFAULT = 240;
 const SIDEBAR_MIN = 180;
-const SIDEBAR_MAX = 520;
+const SIDEBAR_MAX = 800;
 const SIDEBAR_COLLAPSE_THRESHOLD = 80;
 const AI_PANEL_DEFAULT = 360;
 const AI_PANEL_MIN = 280;

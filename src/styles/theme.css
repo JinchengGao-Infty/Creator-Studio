@@ -10,6 +10,13 @@
   --accent-light: #d4a574;
   --user-bubble: #8b7355;
   --user-text: #fff;
+  /* 编辑器专用变量 */
+  --editor-text: #333333;
+  --editor-text-muted: #666666;
+  --editor-selection: rgba(139, 115, 85, 0.25);
+  --editor-cursor: #333333;
+  --editor-gutter: #f0f0e5;
+  --editor-line-highlight: rgba(139, 115, 85, 0.08);
 }
 
 :root[data-theme="dark"] {
@@ -24,6 +31,13 @@
   --accent-light: #d4b896;
   --user-bubble: #4a3f2f;
   --user-text: #e8e8e8;
+  /* 编辑器专用变量 */
+  --editor-text: #e8e8e8;
+  --editor-text-muted: #a0a0a0;
+  --editor-selection: rgba(201, 166, 107, 0.35);
+  --editor-cursor: #e8e8e8;
+  --editor-gutter: #2d2d2d;
+  --editor-line-highlight: rgba(201, 166, 107, 0.1);
 }
 
 html,

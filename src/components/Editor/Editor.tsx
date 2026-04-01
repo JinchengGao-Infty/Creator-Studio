@@ -20,6 +20,9 @@ import { aiComplete } from "../../lib/ai";
 import EditorHeader from "./EditorHeader";
 import "./editor.css";
 import { useAutoSave } from "./useAutoSave";
+import { createEditorTheme, getBackgroundStyles, getMarginLineStyle } from "./editorTheme";
+import { firstLineIndentExtension } from "./firstLineIndent";
+import { useEditorSettingsStore } from "../../features/settings/store/editorSettingsStore";
 import {
   acceptInlineCompletion,
   clearInlineCompletion,
@@ -76,6 +79,9 @@ function Editor({
   const completionTimerRef = useRef<number | null>(null);
   const completionSeqRef = useRef(0);
   const completingRef = useRef(false);
+
+  // 使用编辑器设置
+  const editorSettings = useEditorSettingsStore((state) => state.settings);
 
   const { status, save, reset: resetAutoSave, hasUnsavedChanges } = useAutoSave(value, {
     delay: 2000,
@@ -185,10 +191,10 @@ function Editor({
         if (!currentSel.empty || currentSel.head !== cursor) return;
 
         let text = (raw ?? "").replace(/^\uFEFF/, "");
-        text = text.replace(/^<<<CONTINUE_DRAFT>>>\\s*/m, "");
-        text = text.replace(/^```[\\s\\S]*?```\\s*/m, "");
+        text = text.replace(/^<<<CONTINUE_DRAFT>>>\s*/m, "");
+        text = text.replace(/^```[\s\S]*?```\s*/m, "");
         text = text.trimStart();
-        text = text.replace(/\\s+$/g, "");
+        text = text.replace(/\s+$/g, "");
         if (!text) return;
 
         const maxLen = 260;
@@ -212,6 +218,39 @@ function Editor({
       history(),
       inlineCompletionField,
       inlineCompletionTheme,
+      // 空格键拦截 - 必须放在最前面，确保优先执行
+      keymap.of([
+        {
+          key: " ",  // 空格键
+          run: (view: EditorView) => {
+            const { state } = view;
+            const selection = state.selection.main;
+
+            // 如果有选中文本，不拦截，让默认行为处理
+            if (!selection.empty) return false;
+
+            // 获取 spaceWidthRatio 设置
+            const spaceWidthRatio = editorSettings.spaceWidthRatio;
+            
+            // 计算需要插入的空格数
+            // HTML 中每个空格默认宽度为 0.5em
+            // 要达到一个汉字宽度，需要 1 / spaceWidthRatio 个空格
+            const spaceCount = Math.round(1 / spaceWidthRatio);
+
+            // 在光标位置插入正确数量的空格
+            view.dispatch({
+              changes: {
+                from: selection.from,
+                to: selection.from,
+                insert: " ".repeat(spaceCount),
+              },
+              selection: { anchor: selection.from + spaceCount },
+            });
+
+            return true; // 阻止默认行为
+          },
+        },
+      ]),
       keymap.of([
         {
           key: "Mod-z",
@@ -303,30 +342,14 @@ function Editor({
         setCanUndoState(undoDepth(update.state) > 0);
         setCanRedoState(redoDepth(update.state) > 0);
       }),
-      EditorView.theme({
-        "&": {
-          height: "100%",
-          background: "transparent",
-          color: "var(--text-primary)",
-        },
-        ".cm-scroller": {
-          overflow: "auto",
-          fontFamily:
-            '"PingFang SC","Microsoft YaHei",system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif',
-          fontSize: "16px",
-          lineHeight: "1.8",
-          padding: "20px 24px",
-        },
-        ".cm-content": {
-          caretColor: "var(--text-primary)",
-        },
-        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-          background: "rgba(139, 115, 85, 0.25)",
-        },
-        "&.cm-focused .cm-cursor": {
-          borderLeftColor: "var(--text-primary)",
-        },
-      }),
+      // 动态编辑器主题
+      createEditorTheme(editorSettings),
+      // 首行缩进扩展
+      firstLineIndentExtension(
+        editorSettings.firstLineIndentEnabled,
+        editorSettings.firstLineIndentChars,
+        editorSettings.spaceWidthRatio
+      ),
     ];
     extensionsRef.current = extensions;
 
@@ -348,7 +371,7 @@ function Editor({
       view.destroy();
       viewRef.current = null;
     };
-  }, [chapterId, projectPath, disableInlineCompletion]);
+  }, [chapterId, projectPath, disableInlineCompletion, editorSettings]);
 
   useEffect(() => {
     if (!chapterId) return;
@@ -404,7 +427,22 @@ function Editor({
           if (view) redo(view);
         }}
       />
-      <div ref={hostRef} className="editor-codemirror" />
+      <div
+        ref={hostRef}
+        className={`editor-codemirror ${editorSettings.fixedLineWidthEnabled ? 'fixed-line-width' : ''}`}
+        style={{
+          ...getBackgroundStyles(editorSettings),
+          // 传递行宽给 CSS
+          ...(editorSettings.fixedLineWidthEnabled && {
+            '--editor-line-width': `${editorSettings.lineWidth}ch`,
+          } as React.CSSProperties),
+        }}
+      >
+        {/* 右边距指示线 */}
+        {editorSettings.fixedLineWidthEnabled && editorSettings.showMarginLine && (
+          <div style={getMarginLineStyle(editorSettings) || {}} />
+        )}
+      </div>
     </div>
   );
 }

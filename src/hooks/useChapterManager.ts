@@ -92,6 +92,7 @@ export function useChapterManager(
   const [draftContent, setDraftContentState] = useState("");
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const contentLoadTokenRef = useRef(0);
+  const isInitializedRef = useRef(false);
 
   // 检查是否为网页版
   const isWebEnv = !isTauri();
@@ -234,7 +235,10 @@ export function useChapterManager(
 
   // 初始化加载章节
   useEffect(() => {
-    void refreshChapters();
+    void refreshChapters().then(() => {
+      // 初始化完成后允许处理 ChapterList 的章节切换事件
+      isInitializedRef.current = true;
+    });
   }, [refreshChapters]);
 
   // 当章节 ID 变化时加载内容
@@ -247,6 +251,40 @@ export function useChapterManager(
       onContentChange?.("");
     }
   }, [currentChapterId, loadChapterContent, onContentChange]);
+
+  // 监听 ChapterList 的章节切换事件
+  // 使用 isInitializedRef 避免初始化时的循环调用
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const { detail } = event as CustomEvent<{
+        projectPath: string;
+        chapterId: string | null;
+        cause?: string;
+      }>;
+
+      // 只处理当前项目的章节切换
+      if (!detail || detail.projectPath !== projectPath) return;
+
+      // 初始化阶段忽略（初始化通过 refreshChapters 内部的 setCurrentChapterId 完成）
+      if (!isInitializedRef.current) return;
+
+      // 如果章节 ID 变化，切换章节
+      if (detail.chapterId !== currentChapterId) {
+        setCurrentChapterId(detail.chapterId);
+
+        // 同时更新 localStorage
+        if (detail.chapterId) {
+          localStorage.setItem(
+            currentChapterStorageKey(projectPath),
+            detail.chapterId
+          );
+        }
+      }
+    };
+
+    window.addEventListener("creatorai:chapterSelected", handler);
+    return () => window.removeEventListener("creatorai:chapterSelected", handler);
+  }, [projectPath, currentChapterId]);
 
   return {
     // State

@@ -41,10 +41,48 @@
 .editor-codemirror {
   flex: 1;
   min-height: 0;
+  position: relative;
+  /* 启用 Flexbox 居中 */
+  display: flex;
+  justify-content: center;
 }
 
+/* 当启用固定行宽时 */
+.editor-codemirror.fixed-line-width {
+  /* 移除 flex: 1，让编辑器宽度由内容决定 */
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+}
+
+/* CodeMirror 编辑器 */
 .editor-codemirror .cm-editor {
   height: 100%;
+  width: 100%;
+}
+
+/* 内容区域 */
+.editor-codemirror.fixed-line-width .cm-content {
+  /* 使用固定宽度，margin auto 实现居中 */
+  max-width: var(--editor-line-width, 60ch);
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 网格背景（可选） */
+.editor-codemirror {
+  background-image: 
+    linear-gradient(rgba(0, 0, 0, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px);
+  background-size: 1.5em 1.5em;
+}
+
+/* 暗色主题网格 */
+:root[data-theme="dark"] .editor-codemirror {
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
 }
 
 .editor-textarea {
@@ -70,4 +108,11 @@
   height: 100%;
   padding: 16px;
   overflow: auto;
+}
+
+/* 首行缩进样式 - 用于视觉提示（可选） */
+.cm-first-line-indent::before {
+  content: "";
+  display: inline-block;
+  width: 2em;
 }

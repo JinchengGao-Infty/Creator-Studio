@@ -12,19 +12,22 @@ const isLinux = process.platform === "linux";
 // 根据平台确定 bundle 目录
 function getBundleDirs() {
   const dirs = [];
-  const base = path.join(root, "src-tauri", "target", "release", "bundle");
-
+  // Windows x86_64 构建使用特定目录
   if (isWindows) {
+    const base = path.join(root, "src-tauri", "target", "x86_64-pc-windows-msvc", "release", "bundle");
     dirs.push(path.join(base, "msi"));
     dirs.push(path.join(base, "nsis"));
-  } else if (isMac) {
-    dirs.push(path.join(base, "dmg"));
-    dirs.push(path.join(base, "app"));
-    dirs.push(path.join(base, "appimage"));
-  } else if (isLinux) {
-    dirs.push(path.join(base, "appimage"));
-    dirs.push(path.join(base, "deb"));
-    dirs.push(path.join(base, "rpm"));
+  } else {
+    const base = path.join(root, "src-tauri", "target", "release", "bundle");
+    if (isMac) {
+      dirs.push(path.join(base, "dmg"));
+      dirs.push(path.join(base, "app"));
+      dirs.push(path.join(base, "appimage"));
+    } else if (isLinux) {
+      dirs.push(path.join(base, "appimage"));
+      dirs.push(path.join(base, "deb"));
+      dirs.push(path.join(base, "rpm"));
+    }
   }
 
   return dirs;
