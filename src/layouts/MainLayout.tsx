@@ -4,7 +4,7 @@
  * 简化后的主布局，只负责组合各个面板组件
  */
 
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Button, Space, Typography } from "antd";
 import { FolderOpenOutlined, PlusOutlined } from "@ant-design/icons";
 import { ActivityBar } from "../components/ActivityBar";
@@ -45,7 +45,7 @@ export default function MainLayout({
   onCloseProject,
 }: MainLayoutProps) {
   const [sidebarView, setSidebarView] = useState<SidebarView>("chapters");
-  const editorRef = { current: null as EditorHandle | null };
+  const editorRef = useRef<EditorHandle | null>(null);
 
   // 布局管理
   const layout = useLayoutManager(projectPath);
