@@ -770,7 +770,19 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       if (text.includes("请先在设置") || text.includes("Provider") || text.includes("模型")) {
         setConfigMissing(true);
       }
-      message.error(`发送失败: ${text}`);
+      let displayMsg: string;
+      if (text.includes("ai-engine") || text.includes("spawn")) {
+        displayMsg = `AI 引擎启动失败: ${text}\n请确认已运行 npm run ai-engine:build`;
+      } else if (text.includes("Provider") || text.includes("API Key")) {
+        displayMsg = `配置错误: ${text}`;
+      } else if (text.includes("timeout") || text.includes("Timeout")) {
+        displayMsg = `请求超时，请稍后重试`;
+      } else if (text.includes("连续失败") || text.includes("consecutive")) {
+        displayMsg = `工具调用失败: ${text}`;
+      } else {
+        displayMsg = `AI 调用失败: ${text}`;
+      }
+      message.error(displayMsg);
     } finally {
       setLoading(false);
       setStreamingContent("");
