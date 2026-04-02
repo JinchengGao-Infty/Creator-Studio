@@ -28,6 +28,7 @@ import {
 } from "../../lib/sessions";
 import { formatError } from "../../utils/error";
 import { countWords } from "../../utils/wordCount";
+import { buildWorldSummary } from '../../features/worldbuilding/utils/buildWorldSummary';
 import type { PanelMessage, ToolCall } from "./types";
 import "./ai-panel.css";
 
@@ -661,11 +662,17 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
               writingPreset: formatWritingPreset(activePreset),
             });
 
+      // Inject worldbuilding context
+      const worldSummary = buildWorldSummary();
+      const finalSystemPrompt = worldSummary
+        ? `${systemPrompt}\n\n${worldSummary}`
+        : systemPrompt;
+
       const { content: reply, toolCalls } = await aiChat({
         projectDir: projectPath,
         messages: messagesForAi,
         mode,
-        systemPrompt,
+        systemPrompt: finalSystemPrompt,
         chapterId: resolved?.chapterId ?? null,
         allowWrite,
       });
