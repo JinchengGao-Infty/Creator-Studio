@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crate::file_ops::{append, list, read, search, write};
 use crate::project::ChapterIndex;
 use crate::session::{SessionMode, ToolCall, ToolCallStatus};
-use crate::{rag, security::validate_path, summary};
+use crate::{keyring_store, rag, security::validate_path, summary};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallStartEvent {
@@ -343,9 +343,42 @@ pub fn generate_compact_summary(
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
+    // Runtime injection of API Key into provider config
+    let mut provider_with_auth = provider.clone();
+    if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
+        if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
+            let provider_type = provider_with_auth
+                .get("provider_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("openai-compatible");
+
+            match provider_type {
+                "anthropic" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                "google" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-goog-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                _ => {
+                    // OpenAI-compatible: API Key passed via apiKey field
+                }
+            }
+        }
+    }
+
     let request = json!({
         "type": "compact",
-        "provider": provider,
+        "provider": provider_with_auth,
         "parameters": parameters,
         "messages": messages,
     });
@@ -440,9 +473,42 @@ pub fn run_complete(
         }
     });
 
+    // Runtime injection of API Key into provider config
+    let mut provider_with_auth = provider.clone();
+    if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
+        if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
+            let provider_type = provider_with_auth
+                .get("provider_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("openai-compatible");
+
+            match provider_type {
+                "anthropic" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                "google" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-goog-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                _ => {
+                    // OpenAI-compatible: API Key passed via apiKey field
+                }
+            }
+        }
+    }
+
     let init_request = json!({
         "type": "complete",
-        "provider": provider,
+        "provider": provider_with_auth,
         "parameters": parameters,
         "systemPrompt": system_prompt,
         "messages": messages,
@@ -567,10 +633,43 @@ pub fn run_chat_with_events(
         }
     });
 
+    // Runtime injection of API Key into provider config
+    let mut provider_with_auth = request.provider.clone();
+    if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
+        if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
+            let provider_type = provider_with_auth
+                .get("provider_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("openai-compatible");
+
+            match provider_type {
+                "anthropic" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                "google" => {
+                    if let Some(obj) = provider_with_auth.as_object_mut() {
+                        let headers = obj.entry("headers").or_insert(json!({}));
+                        if let Some(h) = headers.as_object_mut() {
+                            h.insert("x-goog-api-key".to_string(), json!(api_key));
+                        }
+                    }
+                }
+                _ => {
+                    // OpenAI-compatible: API Key passed via apiKey field
+                }
+            }
+        }
+    }
+
     // 发送初始请求
     let init_request = json!({
         "type": "chat",
-        "provider": request.provider,
+        "provider": provider_with_auth,
         "parameters": request.parameters,
         "systemPrompt": request.system_prompt,
         "messages": request.messages,

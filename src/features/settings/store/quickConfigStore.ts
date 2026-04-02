@@ -133,17 +133,13 @@ export const useQuickConfigStore = create<QuickConfigState>((set, get) => ({
       const baseUrl = preset.id === "custom" ? customBaseUrl : preset.baseUrl;
 
       // 构建 Provider 配置
+      // All API key types stored via OS keyring, not in headers
       const provider: Provider = {
         id: `provider_${Date.now()}`,
         name: preset.name,
         base_url: baseUrl,
         provider_type: preset.providerType,
-        headers:
-          preset.authType === "Bearer"
-            ? undefined
-            : preset.authType === "x-api-key"
-              ? { "x-api-key": apiKey }
-              : { "x-goog-api-key": apiKey },
+        headers: undefined,
         models: [],
         models_updated_at: null,
       };
