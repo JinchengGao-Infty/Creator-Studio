@@ -5,6 +5,7 @@ import { ChatPipeline } from './pipelines/chat'
 import { CompletePipeline } from './pipelines/complete'
 import { CompactPipeline } from './pipelines/compact'
 import { FetchModelsPipeline } from './pipelines/fetch-models'
+import { ExtractPipeline } from './pipelines/extract'
 import type { PipelineRuntime } from './core/pipeline'
 
 // --- JSONL I/O ---
@@ -60,6 +61,7 @@ registry.register(new ChatPipeline())
 registry.register(new CompletePipeline())
 registry.register(new CompactPipeline())
 registry.register(new FetchModelsPipeline())
+registry.register(new ExtractPipeline())
 
 // --- Main ---
 
