@@ -721,6 +721,8 @@ pub fn run_chat_with_events(
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let timeout = chat_timeout();
     let mut last_progress = Instant::now();
+    let mut consecutive_tool_errors: u32 = 0;
+    const MAX_CONSECUTIVE_TOOL_ERRORS: u32 = 3;
 
     // 循环处理响应
     loop {
@@ -856,6 +858,34 @@ pub fn run_chat_with_events(
                         }
                         _ => results.push(json!({ "id": id, "result": "" })),
                     }
+                }
+
+                // Check for consecutive failures
+                let all_failed = results.iter().all(|r| {
+                    r.get("result")
+                        .and_then(|v| v.as_str())
+                        .map_or(true, |s| s.starts_with("Error:"))
+                });
+                if all_failed {
+                    consecutive_tool_errors += 1;
+                    eprintln!(
+                        "[ai-bridge] Consecutive tool errors: {}/{}",
+                        consecutive_tool_errors, MAX_CONSECUTIVE_TOOL_ERRORS
+                    );
+                    if consecutive_tool_errors >= MAX_CONSECUTIVE_TOOL_ERRORS {
+                        eprintln!("[ai-bridge] Too many consecutive tool errors, aborting");
+                        let content = if tool_calls.is_empty() {
+                            "AI 引擎工具调用连续失败，已中止。请检查项目路径和文件权限。".to_string()
+                        } else {
+                            format_tool_runs(&tool_calls)
+                        };
+                        drop(stdin);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(ChatResponse { content, tool_calls });
+                    }
+                } else {
+                    consecutive_tool_errors = 0;
                 }
 
                 if direct_return_tool_results {
