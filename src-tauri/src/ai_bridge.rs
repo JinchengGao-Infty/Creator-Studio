@@ -125,6 +125,27 @@ fn find_bundled_ai_engine() -> Option<PathBuf> {
         exe_dir.join("../Resources/bin"),   // macOS: Contents/Resources/bin/
     ];
 
+    // Startup diagnostic: print all candidate paths and their status
+    eprintln!("[ai-bridge] Searching for bundled ai-engine...");
+    for (i, dir) in candidates.iter().enumerate() {
+        let exists = dir.exists();
+        eprintln!("[ai-bridge]   candidate[{i}]: {} (exists={})", dir.display(), exists);
+        if exists {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if name.contains("ai-engine") { Some(name) } else { None }
+                    })
+                    .collect();
+                if !names.is_empty() {
+                    eprintln!("[ai-bridge]     ai-engine files: {:?}", names);
+                }
+            }
+        }
+    }
+
     for dir in candidates {
         if let Some(found) = find_ai_engine_in_dir(&dir) {
             return Some(found);
