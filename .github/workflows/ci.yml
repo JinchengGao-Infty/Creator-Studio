@@ -31,6 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
       - name: Install Linux deps (Tauri)
         run: |
           sudo apt-get update
@@ -40,6 +44,8 @@ jobs:
         with:
           bun-version: latest
       - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm run ai-engine:build
       - run: cargo test
         working-directory: src-tauri
 
@@ -59,6 +65,7 @@ jobs:
           bun-version: latest
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
+      - run: npm run ai-engine:build
       - run: cargo test
         working-directory: src-tauri
       - run: npm run tauri:build
