@@ -15,12 +15,16 @@ function safeCompare(a: string, b: string): boolean {
   }
 }
 
-/** Strict origin check: compare protocol + hostname, not prefix. */
+/** Strict origin check: compare protocol + hostname. */
 function isAllowedOrigin(origin: string): boolean {
   try {
     const url = new URL(origin)
     const hostname = url.hostname
-    return hostname === 'localhost' || hostname === '127.0.0.1'
+    const protocol = url.protocol
+    // Only allow http/https from localhost/127.0.0.1
+    const isLocalhostHost = hostname === 'localhost' || hostname === '127.0.0.1'
+    const isAllowedProtocol = protocol === 'http:' || protocol === 'https:'
+    return isLocalhostHost && isAllowedProtocol
   } catch {
     return false
   }

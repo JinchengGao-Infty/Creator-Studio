@@ -13,7 +13,7 @@
  */
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { initModel, structLog } from '../core/stream-helpers.js'
+import { initModel, structLog, sanitizeError } from '../core/stream-helpers.js'
 import { streamText } from 'ai'
 import { getToolsForSDK } from '../tools.js'
 import type { ProviderConfig, ModelParameters, Message, ToolCallRequest, ToolCallResult } from '../types.js'
@@ -40,21 +40,6 @@ export function chatRoute() {
       return c.json({ error: 'Missing required fields: provider, parameters, systemPrompt, messages' }, 400)
     }
 
-    // Initialize provider — errors caught inside streamSSE for consistent SSE error format
-    let model: ReturnType<typeof initModel>
-    try {
-      model = initModel(body.provider, body.parameters.model)
-    } catch (err: unknown) {
-      // Return SSE error event instead of bare JSON for contract consistency
-      return streamSSE(c, async (stream) => {
-        const message = err instanceof Error ? err.message : String(err)
-        structLog('error', requestId, 'chat.init_error', { error: message })
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'error', message: `Provider initialization failed: ${message}` }),
-        })
-      })
-    }
-
     const executeTools = body.toolCallbackUrl
       ? createToolCallback(body.toolCallbackUrl, body.toolCallbackSecret, requestId, c.req.raw.signal)
       : undefined
@@ -79,6 +64,9 @@ export function chatRoute() {
 
     return streamSSE(c, async (stream) => {
       try {
+        // Provider init inside SSE for consistent error format
+        const model = initModel(body.provider, body.parameters.model)
+
         const result = streamText({
           model,
           messages: allMessages as any,
@@ -156,18 +144,18 @@ export function chatRoute() {
           }),
         })
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
+        const rawMessage = err instanceof Error ? err.message : String(err)
         const isAbort = err instanceof Error && err.name === 'AbortError'
 
         if (!isAbort) {
           structLog('error', requestId, 'chat.error', {
-            error: message,
+            error: rawMessage,
             duration_ms: Date.now() - startMs,
           })
         }
 
         await stream.writeSSE({
-          data: JSON.stringify({ type: 'error', message }),
+          data: JSON.stringify({ type: 'error', message: sanitizeError(rawMessage) }),
         })
       }
     })

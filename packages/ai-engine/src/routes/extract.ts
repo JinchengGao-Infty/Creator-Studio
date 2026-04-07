@@ -6,7 +6,7 @@
  */
 import { Hono } from 'hono'
 import { generateText } from 'ai'
-import { ProviderManager } from '../provider.js'
+import { initModel, structLog, sanitizeError } from '../core/stream-helpers.js'
 import type { ProviderConfig, ModelParameters } from '../types.js'
 
 const EXTRACT_SYSTEM_PROMPT = `你是一个小说文本分析专家。分析用户提供的小说文本，提取以下结构化信息。
@@ -71,22 +71,13 @@ export function extractRoute() {
       return c.json({ error: 'Missing required fields: provider, parameters, text' }, 400)
     }
 
-    const providerManager = new ProviderManager()
-    providerManager.addProvider(body.provider)
-    const sdk = providerManager.createSDK(body.provider.id)
-    const model = sdk(body.parameters.model)
-
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'extract.start',
-      text_length: body.text.length,
-    }))
+    structLog('info', requestId, 'extract.start', { text_length: body.text.length })
 
     const startMs = Date.now()
 
     try {
+      const model = initModel(body.provider, body.parameters.model)
+
       const result = await generateText({
         model,
         messages: [
@@ -96,6 +87,7 @@ export function extractRoute() {
         maxSteps: 1,
         temperature: 0.1,
         maxTokens: body.parameters.maxTokens ?? 4000,
+        abortSignal: c.req.raw.signal,
       } as any)
 
       const content = (result as any).text ?? ''
@@ -111,15 +103,10 @@ export function extractRoute() {
         structured = null
       }
 
-      const durationMs = Date.now() - startMs
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'info',
-        request_id: requestId,
-        event: 'extract.done',
-        duration_ms: durationMs,
+      structLog('info', requestId, 'extract.done', {
+        duration_ms: Date.now() - startMs,
         has_structured: structured !== null,
-      }))
+      })
 
       return c.json({
         type: 'extract_result',
@@ -128,15 +115,9 @@ export function extractRoute() {
         request_id: requestId,
       })
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'error',
-        request_id: requestId,
-        event: 'extract.error',
-        error: message,
-      }))
-      return c.json({ error: message, request_id: requestId }, 500)
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      structLog('error', requestId, 'extract.error', { error: rawMessage })
+      return c.json({ error: sanitizeError(rawMessage), request_id: requestId }, 500)
     }
   })
 

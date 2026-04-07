@@ -8,6 +8,7 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { logger } from 'hono/logger'
 import { authMiddleware } from './middleware/auth.js'
+import { bodyLimitMiddleware } from './middleware/body-limit.js'
 import { errorMiddleware } from './middleware/error.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 import { healthRoute } from './routes/health.js'
@@ -26,6 +27,7 @@ export function createApp(sharedSecret?: string) {
   // Global middleware
   app.use('*', requestIdMiddleware())
   app.use('*', errorMiddleware())
+  app.use('/api/*', bodyLimitMiddleware())
   if (sharedSecret) {
     app.use('/api/*', authMiddleware(sharedSecret))
   }

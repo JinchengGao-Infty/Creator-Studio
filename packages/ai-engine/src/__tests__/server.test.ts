@@ -178,19 +178,17 @@ describe('Request ID middleware', () => {
 // ──────────────────────────────────────────────
 
 describe('Error middleware', () => {
-  it('returns structured error JSON for unhandled errors', async () => {
+  it('returns error for malformed JSON requests', async () => {
     const app = makeApp()
-    // Trigger an error by sending invalid JSON to a route that parses JSON
     const res = await app.request('/api/compact', {
       method: 'POST',
       body: 'not-json',
       headers: { 'Content-Type': 'application/json' },
     })
-    // Should return an error response (400 or 500)
+    // Should return an error response
     expect(res.status).toBeGreaterThanOrEqual(400)
-    const text = await res.text()
-    // Either structured JSON or Hono's built-in error text
-    expect(text.length).toBeGreaterThan(0)
+    // Should have request ID header regardless of error type
+    expect(res.headers.get('X-Request-ID')).toBeTruthy()
   })
 })
 

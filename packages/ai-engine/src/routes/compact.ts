@@ -4,6 +4,7 @@
  */
 import { Hono } from 'hono'
 import { generateCompactSummary } from '../compact.js'
+import { structLog, sanitizeError } from '../core/stream-helpers.js'
 import type { ProviderConfig, ModelParameters, Message } from '../types.js'
 
 interface CompactRequest {
@@ -23,15 +24,11 @@ export function compactRoute() {
       return c.json({ error: 'Missing required fields: provider, parameters, messages' }, 400)
     }
 
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'compact.start',
+    structLog('info', requestId, 'compact.start', {
       provider: body.provider.id,
       model: body.parameters.model,
       message_count: body.messages.length,
-    }))
+    })
 
     const startMs = Date.now()
 
@@ -42,28 +39,19 @@ export function compactRoute() {
         messages: body.messages,
       })
 
-      const durationMs = Date.now() - startMs
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'info',
-        request_id: requestId,
-        event: 'compact.done',
-        duration_ms: durationMs,
+      structLog('info', requestId, 'compact.done', {
+        duration_ms: Date.now() - startMs,
         summary_length: summary.length,
-      }))
+      })
 
       return c.json({ type: 'done', content: summary, request_id: requestId })
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'error',
-        request_id: requestId,
-        event: 'compact.error',
-        error: message,
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      structLog('error', requestId, 'compact.error', {
+        error: rawMessage,
         duration_ms: Date.now() - startMs,
-      }))
-      return c.json({ error: message, request_id: requestId }, 500)
+      })
+      return c.json({ error: sanitizeError(rawMessage), request_id: requestId }, 500)
     }
   })
 

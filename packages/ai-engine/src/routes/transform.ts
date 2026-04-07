@@ -7,7 +7,7 @@
  *   data: {"type":"error","message":"..."}
  */
 import { Hono } from 'hono'
-import { initModel, streamTextRoute } from '../core/stream-helpers.js'
+import { streamTextRoute } from '../core/stream-helpers.js'
 import type { ProviderConfig, ModelParameters } from '../types.js'
 
 type TransformAction = 'polish' | 'expand' | 'condense' | 'restyle'
@@ -57,8 +57,6 @@ export function transformRoute() {
     }
 
     const action = body.action ?? 'polish'
-    const model = initModel(body.provider, body.parameters.model)
-
     let systemPrompt = SYSTEM_PROMPTS[action] ?? SYSTEM_PROMPTS.polish
     if (action === 'restyle' && body.style) {
       systemPrompt += `\n\n目标风格：${body.style}`
@@ -67,8 +65,9 @@ export function transformRoute() {
     return streamTextRoute({
       c,
       routeName: 'transform',
+      provider: body.provider,
+      modelId: body.parameters.model,
       streamTextOptions: {
-        model,
         messages: [
           { role: 'system' as const, content: systemPrompt },
           { role: 'user' as const, content: body.text },

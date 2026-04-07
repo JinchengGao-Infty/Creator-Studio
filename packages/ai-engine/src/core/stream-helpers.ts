@@ -2,18 +2,19 @@
  * Shared SSE streaming helpers.
  *
  * Eliminates boilerplate across chat/complete/transform routes:
- * - Provider initialization with error handling
+ * - Provider initialization inside SSE (consistent error format)
  * - streamText → SSE text_delta/done/error event flow
  * - Structured logging with request_id and duration
  * - Abort-safe error reporting
+ * - Error message sanitization for client responses
  */
 import { streamSSE } from 'hono/streaming'
-import { streamText, type StreamTextResult } from 'ai'
+import { streamText } from 'ai'
 import { ProviderManager } from '../provider.js'
 import type { Context } from 'hono'
 import type { ProviderConfig } from '../types.js'
 
-/** Initialize a provider SDK model, returning a structured error on failure. */
+/** Initialize a provider SDK model. Throws on failure. */
 export function initModel(provider: ProviderConfig, modelId: string) {
   const providerManager = new ProviderManager()
   providerManager.addProvider(provider)
@@ -37,13 +38,28 @@ export function structLog(
   }))
 }
 
+/** Sanitize error messages: strip file paths, stack traces, truncate. */
+export function sanitizeError(message: string): string {
+  let clean = message.replace(/\/[^\s:]+\.[jt]s:\d+/g, '[internal]')
+  clean = clean.replace(/[A-Z]:\\[^\s:]+\.[jt]s:\d+/g, '[internal]')
+  clean = clean.replace(/\n\s+at\s.+/g, '')
+  if (clean.length > 500) {
+    clean = clean.slice(0, 500) + '...'
+  }
+  return clean.trim()
+}
+
 export interface StreamRouteOptions {
   /** Hono context */
   c: Context
   /** Route name for logging (e.g. 'chat', 'complete', 'transform') */
   routeName: string
-  /** streamText options (model, messages, etc.) — passed directly to Vercel AI SDK */
-  streamTextOptions: Parameters<typeof streamText>[0]
+  /** Provider config — model init happens inside SSE for consistent error format */
+  provider: ProviderConfig
+  /** Model ID to use */
+  modelId: string
+  /** streamText options (messages, temperature, etc.) — model is injected automatically */
+  streamTextOptions: Omit<Parameters<typeof streamText>[0], 'model' | 'abortSignal'>
   /** Extra fields to include in the done event (e.g. tool_calls) */
   buildDoneExtra?: (result: Awaited<ReturnType<typeof streamText>>) => Record<string, unknown>
   /** Extra log fields for the start event */
@@ -55,15 +71,11 @@ export interface StreamRouteOptions {
 /**
  * Run a streamText route with standard SSE event contract.
  *
- * Handles:
- * 1. Provider init errors → SSE error event (not bare JSON)
- * 2. text_delta events for each token
- * 3. done event with full content
- * 4. error event for failures (skips AbortError logging)
- * 5. Structured logging for start/done/error
+ * All errors (including provider init) are returned as SSE error events.
+ * Error messages sent to clients are sanitized.
  */
 export function streamTextRoute(opts: StreamRouteOptions) {
-  const { c, routeName, streamTextOptions, buildDoneExtra, startLogExtra, onStepFinish } = opts
+  const { c, routeName, provider, modelId, streamTextOptions, buildDoneExtra, startLogExtra, onStepFinish } = opts
   const requestId = (c.get('requestId') as string) ?? ''
   const startMs = Date.now()
 
@@ -71,11 +83,15 @@ export function streamTextRoute(opts: StreamRouteOptions) {
 
   return streamSSE(c, async (stream) => {
     try {
+      // Provider init inside SSE so errors are SSE events, not bare JSON
+      const model = initModel(provider, modelId)
+
       const result = streamText({
         ...streamTextOptions,
+        model,
         abortSignal: c.req.raw.signal,
         onStepFinish,
-      })
+      } as any)
 
       // Stream text deltas
       let fullText = ''
@@ -108,18 +124,20 @@ export function streamTextRoute(opts: StreamRouteOptions) {
         }),
       })
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
+      const rawMessage = err instanceof Error ? err.message : String(err)
       const isAbort = err instanceof Error && err.name === 'AbortError'
 
+      // Full error logged server-side
       if (!isAbort) {
         structLog('error', requestId, `${routeName}.error`, {
-          error: message,
+          error: rawMessage,
           duration_ms: Date.now() - startMs,
         })
       }
 
+      // Sanitized error sent to client
       await stream.writeSSE({
-        data: JSON.stringify({ type: 'error', message }),
+        data: JSON.stringify({ type: 'error', message: sanitizeError(rawMessage) }),
       })
     }
   })

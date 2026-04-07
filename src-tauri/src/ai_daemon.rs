@@ -80,8 +80,9 @@ impl AIDaemon {
     }
 
     fn start_inner(&self, engine_path: &Path) -> Result<u16, String> {
-        // Kill any existing child
+        // Kill any existing child and clear stale port
         self.kill_child_inner();
+        *self.port.lock().unwrap() = None;
 
         // Check circuit breaker
         if self.is_circuit_broken() {
@@ -128,7 +129,7 @@ impl AIDaemon {
         let first_line = rx
             .recv_timeout(STARTUP_TIMEOUT)
             .map_err(|_| {
-                let _ = child.kill();
+                kill_and_wait(&mut child);
                 format!(
                     "AI daemon startup timeout ({}s). The engine at '{}' did not respond.",
                     STARTUP_TIMEOUT.as_secs(),
@@ -136,14 +137,13 @@ impl AIDaemon {
                 )
             })?
             .map_err(|e| {
-                let _ = child.kill();
-                let status = child.wait().ok();
-                format!("{e}. Exit status: {status:?}")
+                kill_and_wait(&mut child);
+                format!("{e}")
             })?;
 
         let startup_msg: DaemonStartupMessage = serde_json::from_str(first_line.trim())
             .map_err(|e| {
-                let _ = child.kill();
+                kill_and_wait(&mut child);
                 format!(
                     "Invalid daemon startup message: {e}. Got: '{}'",
                     first_line.trim()
@@ -152,7 +152,7 @@ impl AIDaemon {
 
         // Version check
         if startup_msg.version != PROTOCOL_VERSION {
-            let _ = child.kill();
+            kill_and_wait(&mut child);
             return Err(format!(
                 "AI daemon protocol version mismatch: expected {PROTOCOL_VERSION}, got {}",
                 startup_msg.version
@@ -321,6 +321,12 @@ impl Default for AIDaemon {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Kill a child process and wait for it to fully exit, preventing zombie accumulation.
+fn kill_and_wait(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Generate a random shared secret for daemon authentication.

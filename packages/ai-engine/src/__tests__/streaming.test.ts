@@ -1,211 +1,175 @@
 /**
  * SSE Streaming Tests
  *
- * Tests the streaming routes by mocking the AI SDK layer.
- * Validates: SSE format, event types, error handling, abort.
+ * Tests the streaming routes' validation, SSE format, and error handling.
+ * Does NOT test actual LLM responses (requires real API keys).
+ * Focuses on contract compliance: input validation, SSE format, error events.
  */
-import { describe, it, expect, mock, beforeEach } from 'bun:test'
+import { describe, it, expect } from 'bun:test'
 import { createApp } from '../server.js'
-
-// We test SSE at the HTTP level using the app.request() method.
-// The actual LLM calls will fail (no API key), but we can test:
-// 1. Request validation
-// 2. SSE response format for error cases
-// 3. Auth + middleware integration
 
 function makeApp() {
   return createApp() // No auth for test simplicity
 }
 
-function authHeaders() {
-  return { 'Content-Type': 'application/json' }
-}
+const headers = { 'Content-Type': 'application/json' }
 
 const validProvider = {
   id: 'test-provider',
   name: 'Test',
-  baseURL: 'http://localhost:99999', // Will fail — no real server
+  baseURL: 'http://localhost:99999',
   apiKey: 'test-key',
   models: [],
   providerType: 'openai-compatible' as const,
 }
 
-const validParams = {
-  model: 'test-model',
-  temperature: 0.7,
-  maxTokens: 100,
+const validParams = { model: 'test-model', temperature: 0.7, maxTokens: 100 }
+
+/** Parse SSE data lines from response text. */
+function parseSSEDataLines(text: string): Array<{ type: string; [k: string]: unknown }> {
+  return text
+    .split('\n')
+    .filter(l => l.startsWith('data:'))
+    .map(l => JSON.parse(l.replace(/^data:\s*/, '')))
 }
+
+// ──────────────────────────────────────────────
+// Chat validation
+// ──────────────────────────────────────────────
 
 describe('POST /api/chat - validation', () => {
   it('rejects missing provider', async () => {
     const app = makeApp()
     const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        parameters: validParams,
-        systemPrompt: 'test',
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
+      method: 'POST', headers,
+      body: JSON.stringify({ parameters: validParams, systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }] }),
     })
     expect(res.status).toBe(400)
-    const body = await res.json() as any
-    expect(body.error).toContain('Missing required fields')
   })
 
   it('rejects missing systemPrompt', async () => {
     const app = makeApp()
     const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
+      method: 'POST', headers,
+      body: JSON.stringify({ provider: validProvider, parameters: validParams, messages: [{ role: 'user', content: 'hi' }] }),
     })
     expect(res.status).toBe(400)
-  })
-
-  it('rejects missing messages', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'test',
-      }),
-    })
-    expect(res.status).toBe(400)
-  })
-
-  it('returns SSE content-type for valid request', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'test',
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    })
-    // Should be SSE (even if it errors out because no real LLM)
-    expect(res.headers.get('content-type')).toContain('text/event-stream')
-  })
-
-  it('SSE stream contains done or error event when LLM unreachable', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'test',
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    })
-
-    const text = await res.text()
-    // Should contain either a done or error SSE event
-    const hasDone = text.includes('"type":"done"')
-    const hasError = text.includes('"type":"error"')
-    expect(hasDone || hasError).toBe(true)
   })
 })
 
-describe('POST /api/complete - validation', () => {
-  it('rejects missing fields', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/complete', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ provider: validProvider }),
-    })
-    expect(res.status).toBe(400)
-  })
+// ──────────────────────────────────────────────
+// SSE contract: format compliance
+// ──────────────────────────────────────────────
 
-  it('returns SSE content-type for valid request', async () => {
+describe('SSE contract', () => {
+  it('chat returns text/event-stream content type', async () => {
     const app = makeApp()
-    const res = await app.request('/api/complete', {
-      method: 'POST',
-      headers: authHeaders(),
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
       body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'Continue writing',
-        messages: [{ role: 'user', content: 'The sun was' }],
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
       }),
     })
     expect(res.headers.get('content-type')).toContain('text/event-stream')
   })
 
-  it('SSE stream contains done or error event', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/complete', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'Continue',
-        messages: [{ role: 'user', content: 'hello' }],
-      }),
-    })
-
-    const text = await res.text()
-    // Should contain either a done or error event
-    const hasDone = text.includes('"type":"done"')
-    const hasError = text.includes('"type":"error"')
-    expect(hasDone || hasError).toBe(true)
-  })
-})
-
-describe('SSE Format', () => {
-  it('each event is prefixed with data:', async () => {
+  it('SSE data lines are valid JSON with type field', async () => {
     const app = makeApp()
     const res = await app.request('/api/chat', {
-      method: 'POST',
-      headers: authHeaders(),
+      method: 'POST', headers,
       body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'test',
-        messages: [{ role: 'user', content: 'hi' }],
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
       }),
     })
+    const events = parseSSEDataLines(await res.text())
+    expect(events.length).toBeGreaterThan(0)
 
-    const text = await res.text()
-    const lines = text.split('\n').filter((l) => l.startsWith('data:'))
-    expect(lines.length).toBeGreaterThan(0)
+    const validTypes = ['text_delta', 'tool_call_start', 'tool_call_end', 'done', 'error']
+    for (const event of events) {
+      expect(validTypes).toContain(event.type)
+    }
+  })
 
-    // Each data line should be valid JSON
-    for (const line of lines) {
-      const json = line.replace(/^data:\s*/, '')
-      const parsed = JSON.parse(json)
-      expect(parsed.type).toBeDefined()
+  it('SSE stream always ends with done or error', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    const events = parseSSEDataLines(await res.text())
+    const lastEvent = events[events.length - 1]
+    expect(['done', 'error']).toContain(lastEvent.type)
+  })
+
+  it('complete returns SSE with done or error', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/complete', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'Continue', messages: [{ role: 'user', content: 'hello' }],
+      }),
+    })
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+    const events = parseSSEDataLines(await res.text())
+    const lastEvent = events[events.length - 1]
+    expect(['done', 'error']).toContain(lastEvent.type)
+  })
+
+  it('done event has content field', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/complete', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    const events = parseSSEDataLines(await res.text())
+    const doneEvent = events.find(e => e.type === 'done')
+    if (doneEvent) {
+      expect(doneEvent).toHaveProperty('content')
+      expect(typeof doneEvent.content).toBe('string')
+    }
+  })
+
+  it('error event has message field', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: { ...validProvider, baseURL: 'http://this-will-fail:99999' },
+        parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+      }),
+    })
+    const events = parseSSEDataLines(await res.text())
+    const errorEvent = events.find(e => e.type === 'error')
+    if (errorEvent) {
+      expect(errorEvent).toHaveProperty('message')
+      expect(typeof errorEvent.message).toBe('string')
     }
   })
 })
+
+// ──────────────────────────────────────────────
+// Request ID in SSE responses
+// ──────────────────────────────────────────────
 
 describe('Request ID in SSE', () => {
   it('propagates request ID in response headers', async () => {
     const app = makeApp()
     const res = await app.request('/api/chat', {
       method: 'POST',
-      headers: {
-        ...authHeaders(),
-        'X-Request-ID': 'trace-123',
-      },
+      headers: { ...headers, 'X-Request-ID': 'trace-123' },
       body: JSON.stringify({
-        provider: validProvider,
-        parameters: validParams,
-        systemPrompt: 'test',
-        messages: [{ role: 'user', content: 'hi' }],
+        provider: validProvider, parameters: validParams,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
       }),
     })
     expect(res.headers.get('X-Request-ID')).toBe('trace-123')

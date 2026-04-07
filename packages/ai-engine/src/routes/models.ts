@@ -5,6 +5,9 @@
  */
 import { Hono } from 'hono'
 import { fetchModels } from '../models.js'
+import { structLog, sanitizeError } from '../core/stream-helpers.js'
+
+const MODELS_FETCH_TIMEOUT_MS = 15_000 // 15 seconds
 
 interface ModelsQuery {
   baseURL: string
@@ -23,39 +26,39 @@ export function modelsRoute() {
       return c.json({ error: 'Missing required fields: baseURL, apiKey' }, 400)
     }
 
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'models.start',
-      baseURL: body.baseURL,
-    }))
+    structLog('info', requestId, 'models.start', { baseURL: body.baseURL })
 
     try {
       const startMs = Date.now()
-      const models = await fetchModels(body.baseURL, body.apiKey, body.providerType)
-      const durationMs = Date.now() - startMs
 
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'info',
-        request_id: requestId,
-        event: 'models.done',
-        duration_ms: durationMs,
+      // Apply timeout to prevent slow upstream from hanging forever
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
+
+      let models: string[]
+      try {
+        models = await Promise.race([
+          fetchModels(body.baseURL, body.apiKey, body.providerType),
+          new Promise<never>((_, reject) => {
+            controller.signal.addEventListener('abort', () => {
+              reject(new Error(`Models fetch timed out after ${MODELS_FETCH_TIMEOUT_MS / 1000}s`))
+            })
+          }),
+        ])
+      } finally {
+        clearTimeout(timeoutId)
+      }
+
+      structLog('info', requestId, 'models.done', {
+        duration_ms: Date.now() - startMs,
         model_count: models.length,
-      }))
+      })
 
       return c.json({ type: 'models_result', models, request_id: requestId })
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'error',
-        request_id: requestId,
-        event: 'models.error',
-        error: message,
-      }))
-      return c.json({ error: message, request_id: requestId }, 502)
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      structLog('error', requestId, 'models.error', { error: rawMessage })
+      return c.json({ error: sanitizeError(rawMessage), request_id: requestId }, 502)
     }
   })
 
