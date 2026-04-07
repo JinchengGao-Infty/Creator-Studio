@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod ai_bridge;
+mod ai_daemon;
 mod chapter;
 mod config;
 mod file_ops;

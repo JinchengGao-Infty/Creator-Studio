@@ -1,0 +1,468 @@
+//! AI Engine Daemon lifecycle management.
+//!
+//! Manages a long-running Node.js HTTP server (Hono) as a sidecar process.
+//! Handles: startup, health checking, crash loop detection, graceful shutdown.
+
+use rand::Rng;
+use serde::Deserialize;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const PROTOCOL_VERSION: &str = "2.0";
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+const CRASH_LOOP_MAX_RESTARTS: u32 = 3;
+
+#[derive(Debug, Deserialize)]
+struct DaemonStartupMessage {
+    port: u16,
+    version: String,
+}
+
+/// Represents the running state of the AI daemon.
+pub struct AIDaemon {
+    child: Mutex<Option<Child>>,
+    port: Mutex<Option<u16>>,
+    shared_secret: String,
+    restart_count: AtomicU32,
+    last_restart: Mutex<Instant>,
+    circuit_broken: AtomicBool,
+    engine_path: Mutex<Option<PathBuf>>,
+}
+
+impl AIDaemon {
+    pub fn new() -> Self {
+        Self {
+            child: Mutex::new(None),
+            port: Mutex::new(None),
+            shared_secret: generate_shared_secret(),
+            restart_count: AtomicU32::new(0),
+            last_restart: Mutex::new(Instant::now()),
+            circuit_broken: AtomicBool::new(false),
+            engine_path: Mutex::new(None),
+        }
+    }
+
+    /// Returns the shared secret for authenticating HTTP requests to the daemon.
+    pub fn shared_secret(&self) -> &str {
+        &self.shared_secret
+    }
+
+    /// Returns the daemon's port if running.
+    pub fn port(&self) -> Option<u16> {
+        *self.port.lock().unwrap()
+    }
+
+    /// Returns the base URL for the daemon.
+    pub fn base_url(&self) -> Option<String> {
+        self.port().map(|p| format!("http://127.0.0.1:{p}"))
+    }
+
+    /// Returns whether the circuit breaker has tripped.
+    pub fn is_circuit_broken(&self) -> bool {
+        self.circuit_broken.load(Ordering::Relaxed)
+    }
+
+    /// Start the daemon process. Blocks until the daemon reports its port.
+    pub fn start(&self, engine_path: &Path) -> Result<u16, String> {
+        // Kill any existing child
+        self.kill_child();
+
+        // Check circuit breaker
+        if self.is_circuit_broken() {
+            return Err(
+                "AI daemon circuit breaker tripped (too many crashes). Please restart the app or click 'Retry'.".to_string()
+            );
+        }
+
+        // Store engine path for restarts
+        *self.engine_path.lock().unwrap() = Some(engine_path.to_path_buf());
+
+        // Track restarts for crash loop detection
+        self.check_crash_loop()?;
+
+        let mut cmd = build_daemon_command(engine_path, &self.shared_secret)?;
+        eprintln!("[ai-daemon] Starting daemon from: {}", engine_path.display());
+
+        let mut child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to start AI daemon from '{}': {e}",
+                engine_path.display()
+            )
+        })?;
+
+        // Read the first line from stdout to get the port
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Failed to capture daemon stdout")?;
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut first_line = String::new();
+
+        // Wait for startup message with timeout
+        let start = Instant::now();
+        loop {
+            if start.elapsed() > STARTUP_TIMEOUT {
+                let _ = child.kill();
+                return Err(format!(
+                    "AI daemon startup timeout ({}s). The engine at '{}' did not respond.",
+                    STARTUP_TIMEOUT.as_secs(),
+                    engine_path.display()
+                ));
+            }
+
+            match reader.read_line(&mut first_line) {
+                Ok(0) => {
+                    // EOF — process exited
+                    let status = child.wait().ok();
+                    return Err(format!(
+                        "AI daemon exited before reporting port. Exit status: {status:?}"
+                    ));
+                }
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    return Err(format!("Failed to read daemon startup message: {e}"));
+                }
+            }
+        }
+
+        let startup_msg: DaemonStartupMessage = serde_json::from_str(first_line.trim())
+            .map_err(|e| {
+                let _ = child.kill();
+                format!(
+                    "Invalid daemon startup message: {e}. Got: '{}'",
+                    first_line.trim()
+                )
+            })?;
+
+        // Version check
+        if startup_msg.version != PROTOCOL_VERSION {
+            let _ = child.kill();
+            return Err(format!(
+                "AI daemon protocol version mismatch: expected {PROTOCOL_VERSION}, got {}",
+                startup_msg.version
+            ));
+        }
+
+        let port = startup_msg.port;
+        *self.port.lock().unwrap() = Some(port);
+        *self.child.lock().unwrap() = Some(child);
+
+        eprintln!(
+            "[ai-daemon] Daemon started on port {port} (pid={}, version={})",
+            self.child_pid().unwrap_or(0),
+            startup_msg.version
+        );
+
+        Ok(port)
+    }
+
+    /// Stop the daemon gracefully.
+    pub fn stop(&self) {
+        self.kill_child();
+        *self.port.lock().unwrap() = None;
+        eprintln!("[ai-daemon] Daemon stopped");
+    }
+
+    /// Check if the daemon is alive via health endpoint.
+    pub fn health_check(&self) -> Result<(), String> {
+        let base = self
+            .base_url()
+            .ok_or("Daemon not running (no port)")?;
+
+        let url = format!("{base}/health");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(HEALTH_CHECK_TIMEOUT)
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("Health check failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!(
+                "Health check returned status {}",
+                resp.status()
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Ensure the daemon is running. If not, try to restart.
+    pub fn ensure_running(&self) -> Result<u16, String> {
+        // Fast path: check if port exists and child is alive
+        if let Some(port) = self.port() {
+            if self.is_child_alive() {
+                return Ok(port);
+            }
+            eprintln!("[ai-daemon] Child process is dead, attempting restart...");
+        }
+
+        // Restart
+        let path = self
+            .engine_path
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("No engine path set — daemon was never started")?;
+
+        self.start(&path)
+    }
+
+    /// Reset the circuit breaker (user-initiated retry).
+    pub fn reset_circuit_breaker(&self) {
+        self.circuit_broken.store(false, Ordering::Relaxed);
+        self.restart_count.store(0, Ordering::Relaxed);
+        eprintln!("[ai-daemon] Circuit breaker reset");
+    }
+
+    // ─── Private helpers ───
+
+    fn child_pid(&self) -> Option<u32> {
+        self.child
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.id())
+    }
+
+    fn is_child_alive(&self) -> bool {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(None) => true, // Still running
+                _ => false,       // Exited or error
+            }
+        } else {
+            false
+        }
+    }
+
+    fn kill_child(&self) {
+        let mut guard = self.child.lock().unwrap();
+        if let Some(mut child) = guard.take() {
+            eprintln!("[ai-daemon] Killing child process (pid={})", child.id());
+
+            // Try graceful shutdown first
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGTERM);
+                }
+                // Wait briefly for graceful exit
+                std::thread::sleep(GRACEFUL_SHUTDOWN_TIMEOUT);
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
+
+            let _ = child.wait();
+        }
+    }
+
+    fn check_crash_loop(&self) -> Result<(), String> {
+        let mut last = self.last_restart.lock().unwrap();
+        let now = Instant::now();
+
+        if now.duration_since(*last) > CRASH_LOOP_WINDOW {
+            // Window expired, reset counter
+            self.restart_count.store(0, Ordering::Relaxed);
+        }
+
+        let count = self.restart_count.fetch_add(1, Ordering::Relaxed);
+        *last = now;
+
+        if count >= CRASH_LOOP_MAX_RESTARTS {
+            self.circuit_broken.store(true, Ordering::Relaxed);
+            eprintln!(
+                "[ai-daemon] Circuit breaker tripped! {} restarts in {}s window",
+                count,
+                CRASH_LOOP_WINDOW.as_secs()
+            );
+            return Err(format!(
+                "AI daemon crash loop detected ({count} restarts in {} minutes). Circuit breaker tripped.",
+                CRASH_LOOP_WINDOW.as_secs() / 60
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for AIDaemon {
+    fn drop(&mut self) {
+        self.kill_child();
+    }
+}
+
+impl Default for AIDaemon {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generate a random shared secret for daemon authentication.
+fn generate_shared_secret() -> String {
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    hex::encode(&bytes)
+}
+
+/// Detect whether a path is a script (JS/TS) or a native binary.
+fn is_script_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("ts" | "js")
+    )
+}
+
+/// Build the Command to spawn the daemon process.
+fn build_daemon_command(engine_path: &Path, shared_secret: &str) -> Result<Command, String> {
+    let mut cmd = if is_script_path(engine_path) {
+        let ext = engine_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let (runtime, args): (&str, Vec<&str>) = if ext == "ts" {
+            ("bun", vec!["run"])
+        } else {
+            ("node", vec![])
+        };
+
+        let mut c = Command::new(runtime);
+        for arg in &args {
+            c.arg(arg);
+        }
+        c.arg(engine_path);
+        c
+    } else {
+        Command::new(engine_path)
+    };
+
+    cmd.env("CREATORAI_SHARED_SECRET", shared_secret)
+        .env("CREATORAI_PORT", "0") // Dynamic port
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped()) // Read startup message
+        .stderr(Stdio::inherit()); // Forward logs
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    Ok(cmd)
+}
+
+/// hex encoding helper (avoid pulling in the hex crate)
+mod hex {
+    pub fn encode(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_shared_secret() {
+        let s1 = generate_shared_secret();
+        let s2 = generate_shared_secret();
+        assert_eq!(s1.len(), 64); // 32 bytes → 64 hex chars
+        assert_ne!(s1, s2); // Should be different each time
+        assert!(s1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_is_script_path() {
+        assert!(is_script_path(Path::new("foo.js")));
+        assert!(is_script_path(Path::new("bar.ts")));
+        assert!(!is_script_path(Path::new("baz.exe")));
+        assert!(!is_script_path(Path::new("baz")));
+    }
+
+    #[test]
+    fn test_daemon_new_defaults() {
+        let daemon = AIDaemon::new();
+        assert!(daemon.port().is_none());
+        assert!(!daemon.is_circuit_broken());
+        assert_eq!(daemon.shared_secret().len(), 64);
+    }
+
+    #[test]
+    fn test_crash_loop_detection() {
+        let daemon = AIDaemon::new();
+        // First few should be ok
+        assert!(daemon.check_crash_loop().is_ok());
+        assert!(daemon.check_crash_loop().is_ok());
+        assert!(daemon.check_crash_loop().is_ok());
+        // 4th should trip the breaker
+        let result = daemon.check_crash_loop();
+        assert!(result.is_err());
+        assert!(daemon.is_circuit_broken());
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset() {
+        let daemon = AIDaemon::new();
+        // Trip it
+        for _ in 0..4 {
+            let _ = daemon.check_crash_loop();
+        }
+        assert!(daemon.is_circuit_broken());
+
+        // Reset
+        daemon.reset_circuit_breaker();
+        assert!(!daemon.is_circuit_broken());
+        assert!(daemon.check_crash_loop().is_ok());
+    }
+
+    #[test]
+    fn test_build_daemon_command_js() {
+        let cmd = build_daemon_command(Path::new("/tmp/ai-engine.js"), "secret123").unwrap();
+        let program = cmd.get_program().to_str().unwrap();
+        assert_eq!(program, "node");
+    }
+
+    #[test]
+    fn test_build_daemon_command_ts() {
+        let cmd = build_daemon_command(Path::new("/tmp/server.ts"), "secret123").unwrap();
+        let program = cmd.get_program().to_str().unwrap();
+        assert_eq!(program, "bun");
+    }
+
+    #[test]
+    fn test_build_daemon_command_binary() {
+        let cmd = build_daemon_command(Path::new("/tmp/ai-engine"), "secret123").unwrap();
+        let program = cmd.get_program().to_str().unwrap();
+        assert_eq!(program, "/tmp/ai-engine");
+    }
+
+    #[test]
+    fn test_hex_encode() {
+        assert_eq!(hex::encode(&[0x00, 0xff, 0x0a]), "00ff0a");
+        assert_eq!(hex::encode(&[]), "");
+    }
+}
