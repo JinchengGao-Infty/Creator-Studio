@@ -27,6 +27,7 @@ export async function generateCompactSummary(params: {
   provider: ProviderConfig
   parameters: ModelParameters
   messages: Message[]
+  abortSignal?: AbortSignal
 }): Promise<string> {
   const providerManager = new ProviderManager()
   providerManager.addProvider(params.provider)
@@ -47,6 +48,7 @@ export async function generateCompactSummary(params: {
     temperature: 0.2,
     topP: 1,
     maxTokens: summaryMaxTokens,
+    abortSignal: params.abortSignal,
   } as any)
 
   return ((result as any).text ?? '').trim()

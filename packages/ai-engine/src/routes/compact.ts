@@ -37,6 +37,7 @@ export function compactRoute() {
         provider: body.provider,
         parameters: body.parameters,
         messages: body.messages,
+        abortSignal: c.req.raw.signal,
       })
 
       structLog('info', requestId, 'compact.done', {

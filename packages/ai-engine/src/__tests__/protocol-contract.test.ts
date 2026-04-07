@@ -110,6 +110,25 @@ describe('Error response contract', () => {
     // Should not contain raw file paths
     expect(body.error).not.toMatch(/\/[a-zA-Z]+\/[^\s]+\.[jt]s:\d+/)
   })
+
+  it('sanitizeError strips file paths from error messages', async () => {
+    // Directly test the sanitizeError function
+    const { sanitizeError } = await import('../core/stream-helpers.js')
+
+    // Should strip Unix paths
+    expect(sanitizeError('Error at /home/user/project/src/server.ts:42')).not.toContain('/home/user')
+    expect(sanitizeError('Error at /home/user/project/src/server.ts:42')).toContain('[internal]')
+
+    // Should strip Windows paths
+    expect(sanitizeError('Error at C:\\Users\\foo\\project\\server.ts:10')).not.toContain('C:\\Users')
+
+    // Should strip stack traces
+    expect(sanitizeError('Error\n    at Object.foo (/bar.js:1)')).not.toContain('at Object.foo')
+
+    // Should truncate long messages
+    const longMsg = 'x'.repeat(600)
+    expect(sanitizeError(longMsg).length).toBeLessThanOrEqual(503) // 500 + "..."
+  })
 })
 
 describe('Body limit contract', () => {

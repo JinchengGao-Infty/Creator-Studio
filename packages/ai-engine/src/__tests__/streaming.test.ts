@@ -121,7 +121,7 @@ describe('SSE contract', () => {
     expect(['done', 'error']).toContain(lastEvent.type)
   })
 
-  it('done event has content field', async () => {
+  it('last event is always done or error with required fields', async () => {
     const app = makeApp()
     const res = await app.request('/api/complete', {
       method: 'POST', headers,
@@ -131,28 +131,18 @@ describe('SSE contract', () => {
       }),
     })
     const events = parseSSEDataLines(await res.text())
-    const doneEvent = events.find(e => e.type === 'done')
-    if (doneEvent) {
-      expect(doneEvent).toHaveProperty('content')
-      expect(typeof doneEvent.content).toBe('string')
-    }
-  })
+    expect(events.length).toBeGreaterThan(0)
+    const lastEvent = events[events.length - 1]
 
-  it('error event has message field', async () => {
-    const app = makeApp()
-    const res = await app.request('/api/chat', {
-      method: 'POST', headers,
-      body: JSON.stringify({
-        provider: { ...validProvider, baseURL: 'http://this-will-fail:99999' },
-        parameters: validParams,
-        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
-      }),
-    })
-    const events = parseSSEDataLines(await res.text())
-    const errorEvent = events.find(e => e.type === 'error')
-    if (errorEvent) {
-      expect(errorEvent).toHaveProperty('message')
-      expect(typeof errorEvent.message).toBe('string')
+    if (lastEvent.type === 'done') {
+      // done events MUST have content field
+      expect(lastEvent).toHaveProperty('content')
+      expect(typeof lastEvent.content).toBe('string')
+    } else {
+      // error events MUST have message field
+      expect(lastEvent.type).toBe('error')
+      expect(lastEvent).toHaveProperty('message')
+      expect(typeof lastEvent.message).toBe('string')
     }
   })
 })

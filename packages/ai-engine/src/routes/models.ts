@@ -31,20 +31,18 @@ export function modelsRoute() {
     try {
       const startMs = Date.now()
 
-      // Apply timeout to prevent slow upstream from hanging forever
+      // Apply timeout — AbortController actually cancels the underlying fetch
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
 
       let models: string[]
       try {
-        models = await Promise.race([
-          fetchModels(body.baseURL, body.apiKey, body.providerType),
-          new Promise<never>((_, reject) => {
-            controller.signal.addEventListener('abort', () => {
-              reject(new Error(`Models fetch timed out after ${MODELS_FETCH_TIMEOUT_MS / 1000}s`))
-            })
-          }),
-        ])
+        models = await fetchModels(body.baseURL, body.apiKey, body.providerType, controller.signal)
+      } catch (err) {
+        if (controller.signal.aborted) {
+          throw new Error(`Models fetch timed out after ${MODELS_FETCH_TIMEOUT_MS / 1000}s`)
+        }
+        throw err
       } finally {
         clearTimeout(timeoutId)
       }

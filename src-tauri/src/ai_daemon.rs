@@ -110,10 +110,13 @@ impl AIDaemon {
         // Read the first line from stdout to get the port.
         // Use a separate thread + channel to implement real timeout
         // (BufRead::read_line on a blocking pipe cannot be interrupted).
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("Failed to capture daemon stdout")?;
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                kill_and_wait(&mut child);
+                return Err("Failed to capture daemon stdout".to_string());
+            }
+        };
 
         let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
         std::thread::spawn(move || {
