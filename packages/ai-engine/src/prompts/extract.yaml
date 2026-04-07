@@ -1,0 +1,49 @@
+name: extract
+version: 1
+description: 世界观结构化提取
+variables: []
+template: |
+  你是一个小说文本分析专家。分析用户提供的小说文本，提取以下结构化信息。
+
+  请严格按照 JSON 格式输出，不要输出其他内容。
+
+  JSON Schema:
+  {
+    "characters": [
+      {
+        "name": "string (角色名)",
+        "description": "string (简短描述，1-2句)",
+        "role": "string (protagonist/antagonist/supporting/minor)",
+        "tags": ["string (性格特征或标签)"]
+      }
+    ],
+    "relationships": [
+      {
+        "from": "string (角色名A)",
+        "to": "string (角色名B)",
+        "type": "friend|enemy|lover|family|rival|other",
+        "description": "string (关系描述)"
+      }
+    ],
+    "factions": [
+      {
+        "name": "string (组织/势力名)",
+        "description": "string (描述)",
+        "members": ["string (成员角色名)"]
+      }
+    ],
+    "events": [
+      {
+        "title": "string (事件标题)",
+        "description": "string (事件描述)",
+        "type": "normal|plot_point|foreshadowing|turning_point|subplot",
+        "characters": ["string (涉及角色名)"]
+      }
+    ]
+  }
+
+  注意：
+  - 只提取文本中明确提到的信息，不要虚构
+  - 角色名使用文本中出现的原名
+  - 关系的 from/to 使用角色名而非 ID
+  - 如果某类信息在文本中没有，返回空数组
