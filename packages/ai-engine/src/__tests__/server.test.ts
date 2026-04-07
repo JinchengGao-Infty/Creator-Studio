@@ -178,29 +178,16 @@ describe('Error middleware', () => {
 // ──────────────────────────────────────────────
 
 describe('Route registration', () => {
-  it('stub routes return 501, implemented routes validate input', async () => {
+  it('all implemented routes validate input (400 for missing fields)', async () => {
     const app = makeApp()
 
-    // Still stub routes (501)
-    const stubRoutes = [
+    const routes = [
+      { method: 'POST', path: '/api/chat' },
+      { method: 'POST', path: '/api/complete' },
       { method: 'POST', path: '/api/extract' },
       { method: 'POST', path: '/api/transform' },
     ]
-    for (const { method, path } of stubRoutes) {
-      const res = await app.request(path, {
-        method,
-        body: '{}',
-        headers: { 'Content-Type': 'application/json' },
-      })
-      expect(res.status).toBe(501)
-    }
-
-    // Implemented routes validate input (400 for missing fields)
-    const implRoutes = [
-      { method: 'POST', path: '/api/chat' },
-      { method: 'POST', path: '/api/complete' },
-    ]
-    for (const { method, path } of implRoutes) {
+    for (const { method, path } of routes) {
       const res = await app.request(path, {
         method,
         body: '{}',

@@ -34,23 +34,37 @@ export function compactRoute() {
     }))
 
     const startMs = Date.now()
-    const summary = await generateCompactSummary({
-      provider: body.provider,
-      parameters: body.parameters,
-      messages: body.messages,
-    })
 
-    const durationMs = Date.now() - startMs
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'compact.done',
-      duration_ms: durationMs,
-      summary_length: summary.length,
-    }))
+    try {
+      const summary = await generateCompactSummary({
+        provider: body.provider,
+        parameters: body.parameters,
+        messages: body.messages,
+      })
 
-    return c.json({ type: 'done', content: summary, request_id: requestId })
+      const durationMs = Date.now() - startMs
+      console.error(JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'info',
+        request_id: requestId,
+        event: 'compact.done',
+        duration_ms: durationMs,
+        summary_length: summary.length,
+      }))
+
+      return c.json({ type: 'done', content: summary, request_id: requestId })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'error',
+        request_id: requestId,
+        event: 'compact.error',
+        error: message,
+        duration_ms: Date.now() - startMs,
+      }))
+      return c.json({ error: message, request_id: requestId }, 500)
+    }
   })
 
   return route
