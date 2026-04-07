@@ -298,6 +298,69 @@ describe('Fault: request ID propagation', () => {
 })
 
 // ──────────────────────────────────────────────
+// SSRF protection
+// ──────────────────────────────────────────────
+
+describe('Fault: SSRF protection on toolCallbackUrl', () => {
+  it('rejects external toolCallbackUrl', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: deadProvider, parameters: params,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+        toolCallbackUrl: 'http://evil.com:8080/steal',
+      }),
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error).toContain('localhost')
+  })
+
+  it('rejects toolCallbackUrl with non-localhost hostname', async () => {
+    const app = makeApp()
+    for (const url of ['http://192.168.1.1:3000/tool', 'http://10.0.0.1/tool', 'https://api.openai.com/tool']) {
+      const res = await app.request('/api/chat', {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          provider: deadProvider, parameters: params,
+          systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+          toolCallbackUrl: url,
+        }),
+      })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('accepts localhost toolCallbackUrl', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: deadProvider, parameters: params,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+        toolCallbackUrl: 'http://127.0.0.1:9999/tool/execute',
+      }),
+    })
+    // Should NOT be 400 (SSRF check passed) — will be SSE (possibly error from dead provider)
+    expect(res.headers.get('content-type')).toContain('text/event-stream')
+  })
+
+  it('rejects invalid toolCallbackUrl', async () => {
+    const app = makeApp()
+    const res = await app.request('/api/chat', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        provider: deadProvider, parameters: params,
+        systemPrompt: 'test', messages: [{ role: 'user', content: 'hi' }],
+        toolCallbackUrl: 'not-a-url',
+      }),
+    })
+    expect(res.status).toBe(400)
+  })
+})
+
+// ──────────────────────────────────────────────
 // Real HTTP integration (via startServer)
 // ──────────────────────────────────────────────
 

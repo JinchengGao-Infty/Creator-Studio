@@ -163,7 +163,7 @@ fn find_dev_sidecar_ai_engine() -> Option<PathBuf> {
     find_ai_engine_in_dir(&dir)
 }
 
-fn get_ai_engine_path() -> Result<PathBuf, String> {
+pub fn get_ai_engine_path() -> Result<PathBuf, String> {
     let mut override_error: Option<String> = None;
     
     // 调试日志：记录 exe 目录位置

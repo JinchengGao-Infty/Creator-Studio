@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod ai_bridge;
 mod ai_daemon;
+mod ai_proxy;
 mod chapter;
 mod config;
 mod file_ops;
@@ -216,7 +217,10 @@ fn set_default_parameters(parameters: ModelParameters) -> Result<(), String> {
 // ===== Models Commands =====
 
 #[tauri::command(rename_all = "camelCase")]
-async fn refresh_provider_models(provider_id: String) -> Result<Vec<String>, String> {
+async fn refresh_provider_models(
+    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
+    provider_id: String,
+) -> Result<Vec<String>, String> {
     let provider = {
         let config = config::load_config()?;
         config
@@ -237,9 +241,11 @@ async fn refresh_provider_models(provider_id: String) -> Result<Vec<String>, Str
         config::ProviderType::Anthropic => "anthropic",
     }
     .to_string();
-    let api_key_for_task = api_key.clone();
+
+    // Use daemon HTTP proxy instead of spawning one-shot process
+    let daemon_arc = daemon.inner().clone();
     let models = tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::fetch_models(&provider_type, &base_url, &api_key_for_task)
+        ai_proxy::fetch_models(&daemon_arc, &provider_type, &base_url, &api_key)
     })
     .await
     .map_err(|e| format!("refresh_provider_models join error: {e}"))??;
@@ -424,56 +430,25 @@ fn ai_complete_cancel(runtime: tauri::State<AiCompleteRuntime>) -> Result<(), St
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_complete(
-    runtime: tauri::State<'_, AiCompleteRuntime>,
+    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
     messages: Vec<serde_json::Value>,
 ) -> Result<String, String> {
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    {
-        let mut guard = runtime
-            .cancel_flag
-            .lock()
-            .map_err(|_| "ai_complete lock poisoned".to_string())?;
-        if let Some(prev) = guard.take() {
-            prev.store(true, Ordering::SeqCst);
-        }
-        *guard = Some(cancel_flag.clone());
-    }
-
-    let cancel_for_task = cancel_flag.clone();
-    let response = match tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::run_complete(provider, parameters, system_prompt, messages, Some(cancel_for_task))
+    let daemon_arc = daemon.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_proxy::run_complete(&daemon_arc, provider, parameters, system_prompt, messages)
     })
     .await
-    {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("ai_complete join error: {e}")),
-    };
-
-    {
-        let mut guard = runtime
-            .cancel_flag
-            .lock()
-            .map_err(|_| "ai_complete lock poisoned".to_string())?;
-        if guard
-            .as_ref()
-            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
-        {
-            *guard = None;
-        }
-    }
-
-    response
+    .map_err(|e| format!("ai_complete join error: {e}"))?
 }
 
 // ===== AI Chat Command =====
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_chat(
-    app: tauri::AppHandle,
-    runtime: tauri::State<'_, AiChatRuntime>,
+    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
@@ -482,77 +457,26 @@ async fn ai_chat(
     mode: session::SessionMode,
     chapter_id: Option<String>,
     allow_write: Option<bool>,
-) -> Result<ai_bridge::ChatResponse, String> {
-    use tauri::Emitter;
-
-    let request = ai_bridge::ChatRequest {
-        provider,
-        parameters,
-        system_prompt,
-        messages,
-        project_dir,
-        mode,
-        chapter_id,
-        allow_write: allow_write.unwrap_or(false),
-    };
-
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    {
-        let mut guard = runtime
-            .cancel_flag
-            .lock()
-            .map_err(|_| "ai_chat lock poisoned".to_string())?;
-        if let Some(prev) = guard.take() {
-            prev.store(true, Ordering::SeqCst);
-        }
-        *guard = Some(cancel_flag.clone());
-    }
-
-    let app_for_start = app.clone();
-    let app_for_end = app.clone();
-    let events = ai_bridge::ChatEventHandler {
-        on_tool_call_start: Arc::new(move |payload| {
-            let _ = app_for_start.emit("ai:tool_call_start", payload);
-        }),
-        on_tool_call_end: Arc::new(move |payload| {
-            let _ = app_for_end.emit("ai:tool_call_end", payload);
-        }),
-    };
-
-    let cancel_for_task = cancel_flag.clone();
-    let response = match tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::run_chat_with_events(request, Some(events), Some(cancel_for_task))
+) -> Result<ai_proxy::ChatResponse, String> {
+    let daemon_arc = daemon.inner().clone();
+    // TODO: tool_callback_port will be wired when tool execution server is implemented
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_proxy::run_chat(&daemon_arc, provider, parameters, system_prompt, messages, None)
     })
     .await
-    {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("ai_chat join error: {e}")),
-    };
-
-    {
-        let mut guard = runtime
-            .cancel_flag
-            .lock()
-            .map_err(|_| "ai_chat lock poisoned".to_string())?;
-        if guard
-            .as_ref()
-            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
-        {
-            *guard = None;
-        }
-    }
-
-    response
+    .map_err(|e| format!("ai_chat join error: {e}"))?
 }
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_extract(
+    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     text: String,
 ) -> Result<serde_json::Value, String> {
+    let daemon_arc = daemon.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::run_extract(provider, parameters, text)
+        ai_proxy::run_extract(&daemon_arc, provider, parameters, text)
     })
     .await
     .map_err(|e| format!("ai_extract join error: {e}"))?
@@ -560,14 +484,16 @@ async fn ai_extract(
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_transform(
+    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     text: String,
     action: String,
     style: Option<String>,
 ) -> Result<String, String> {
+    let daemon_arc = daemon.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        ai_bridge::run_transform(provider, parameters, text, action, style)
+        ai_proxy::run_transform(&daemon_arc, provider, parameters, text, action, style)
     })
     .await
     .map_err(|e| format!("ai_transform join error: {e}"))?
@@ -578,14 +504,29 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|_| {
+        .setup(|app| {
             cleanup_reinstall_state_if_needed()?;
             config::load_config()
                 .map(|_| ())
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+
+            // Start AI daemon in background
+            use tauri::Manager;
+            let daemon = app.state::<Arc<ai_daemon::AIDaemon>>();
+            if let Ok(engine_path) = ai_bridge::get_ai_engine_path() {
+                match daemon.start(&engine_path) {
+                    Ok(port) => eprintln!("[setup] AI daemon started on port {port}"),
+                    Err(e) => eprintln!("[setup] AI daemon start failed (will retry on first request): {e}"),
+                }
+            } else {
+                eprintln!("[setup] AI engine path not found (will retry on first request)");
+            }
+
+            Ok(())
         })
         .manage(AiChatRuntime::default())
         .manage(AiCompleteRuntime::default())
+        .manage(Arc::new(ai_daemon::AIDaemon::new()))
         .invoke_handler(tauri::generate_handler![
             greet,
             get_config,

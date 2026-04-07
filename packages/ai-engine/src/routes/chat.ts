@@ -49,6 +49,18 @@ export function chatRoute(limiter?: ConcurrencyLimiter) {
       }, 429)
     }
 
+    // Validate toolCallbackUrl is localhost only (prevent SSRF)
+    if (body.toolCallbackUrl) {
+      try {
+        const cbUrl = new URL(body.toolCallbackUrl)
+        if (cbUrl.hostname !== 'localhost' && cbUrl.hostname !== '127.0.0.1') {
+          return c.json({ error: 'toolCallbackUrl must be localhost or 127.0.0.1' }, 400)
+        }
+      } catch {
+        return c.json({ error: 'Invalid toolCallbackUrl' }, 400)
+      }
+    }
+
     const executeTools = body.toolCallbackUrl
       ? createToolCallback(body.toolCallbackUrl, body.toolCallbackSecret, requestId, c.req.raw.signal)
       : undefined
