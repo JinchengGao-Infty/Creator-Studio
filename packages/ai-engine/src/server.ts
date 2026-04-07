@@ -9,6 +9,7 @@ import { serve } from '@hono/node-server'
 import { logger } from 'hono/logger'
 import { authMiddleware } from './middleware/auth.js'
 import { bodyLimitMiddleware } from './middleware/body-limit.js'
+import { concurrencyMiddleware } from './middleware/concurrency.js'
 import { errorMiddleware } from './middleware/error.js'
 import { requestIdMiddleware } from './middleware/request-id.js'
 import { healthRoute } from './routes/health.js'
@@ -35,6 +36,12 @@ export function createApp(sharedSecret?: string) {
     app.use('/api/*', authMiddleware(sharedSecret))
   }
   app.use('/api/*', bodyLimitMiddleware())
+
+  // Concurrency limit for streaming routes (3 concurrent max)
+  const streamingRoutes = ['/api/chat', '/api/complete', '/api/transform']
+  for (const path of streamingRoutes) {
+    app.use(`${path}/*`, concurrencyMiddleware())
+  }
 
   // Routes
   app.route('/health', healthRoute(PROTOCOL_VERSION))
