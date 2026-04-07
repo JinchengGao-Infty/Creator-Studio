@@ -163,98 +163,43 @@ pub fn run_transform(
         body["style"] = json!(s);
     }
 
-    // Transform uses SSE — we need to read the full stream
+    let sse_text = post_sse(daemon, "/api/transform", &body)?;
+    parse_sse_content(&sse_text)
+}
+
+// NOTE: ai_chat and ai_complete still use ai_bridge (legacy JSONL) because:
+// - ai_chat needs Rust-side tool execution (read/write/append/search/rag)
+// - ai_complete needs AtomicBool cancel support
+// These will migrate to daemon once the Rust tool execution HTTP server is implemented.
+
+/// Send POST request to SSE endpoint, check status, then parse.
+fn post_sse(daemon: &AIDaemon, path: &str, body: &Value) -> Result<String, String> {
     let (client, base) = build_client(daemon)?;
-    let url = format!("{base}/api/transform");
+    let url = format!("{base}{path}");
 
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bearer {}", daemon.shared_secret()))
         .header("Content-Type", "application/json")
-        .json(&body)
+        .json(body)
         .send()
         .map_err(|e| format!("Daemon request failed: {e}"))?;
 
-    let text = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
+    let status = resp.status();
 
-    // Parse SSE events, extract final content from done event
-    parse_sse_content(&text)
-}
-
-/// Run inline completion via daemon (blocking, collects full SSE).
-pub fn run_complete(
-    daemon: &AIDaemon,
-    provider: Value,
-    parameters: Value,
-    system_prompt: String,
-    messages: Vec<Value>,
-) -> Result<String, String> {
-    daemon.ensure_running()?;
-
-    let body = json!({
-        "provider": inject_auth(provider),
-        "parameters": parameters,
-        "systemPrompt": system_prompt,
-        "messages": messages,
-    });
-
-    let (client, base) = build_client(daemon)?;
-    let url = format!("{base}/api/complete");
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", daemon.shared_secret()))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Daemon request failed: {e}"))?;
-
-    let text = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
-    parse_sse_content(&text)
-}
-
-/// Run chat via daemon (blocking, collects full SSE).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChatResponse {
-    pub content: String,
-    pub tool_calls: Vec<Value>,
-}
-
-pub fn run_chat(
-    daemon: &AIDaemon,
-    provider: Value,
-    parameters: Value,
-    system_prompt: String,
-    messages: Vec<Value>,
-    tool_callback_port: Option<u16>,
-) -> Result<ChatResponse, String> {
-    daemon.ensure_running()?;
-
-    let mut body = json!({
-        "provider": inject_auth(provider),
-        "parameters": parameters,
-        "systemPrompt": system_prompt,
-        "messages": messages,
-    });
-
-    if let Some(port) = tool_callback_port {
-        body["toolCallbackUrl"] = json!(format!("http://127.0.0.1:{port}/tool/execute"));
-        body["toolCallbackSecret"] = json!(daemon.shared_secret());
+    // Handle non-2xx before attempting SSE parse
+    if !status.is_success() && !status.is_informational() {
+        let text = resp.text().unwrap_or_default();
+        // Try to extract error from JSON response
+        if let Ok(err_json) = serde_json::from_str::<Value>(&text) {
+            if let Some(msg) = err_json["error"].as_str() {
+                return Err(msg.to_string());
+            }
+        }
+        return Err(format!("Daemon returned status {status}: {text}"));
     }
 
-    let (client, base) = build_client(daemon)?;
-    let url = format!("{base}/api/chat");
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", daemon.shared_secret()))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Daemon request failed: {e}"))?;
-
-    let text = resp.text().map_err(|e| format!("Failed to read response: {e}"))?;
-    parse_sse_chat_response(&text)
+    resp.text().map_err(|e| format!("Failed to read response: {e}"))
 }
 
 // ─── SSE Parsing Helpers ───
@@ -283,35 +228,6 @@ fn parse_sse_content(sse_text: &str) -> Result<String, String> {
     Err("No done/error event in SSE response".to_string())
 }
 
-/// Parse SSE chat response with tool calls.
-fn parse_sse_chat_response(sse_text: &str) -> Result<ChatResponse, String> {
-    for line in sse_text.lines() {
-        let data = match line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
-            Some(d) => d.trim(),
-            None => continue,
-        };
-
-        if let Ok(event) = serde_json::from_str::<Value>(data) {
-            match event["type"].as_str() {
-                Some("done") => {
-                    return Ok(ChatResponse {
-                        content: event["content"].as_str().unwrap_or("").to_string(),
-                        tool_calls: event["tool_calls"]
-                            .as_array()
-                            .cloned()
-                            .unwrap_or_default(),
-                    });
-                }
-                Some("error") => {
-                    return Err(event["message"].as_str().unwrap_or("Unknown error").to_string());
-                }
-                _ => continue,
-            }
-        }
-    }
-
-    Err("No done/error event in SSE response".to_string())
-}
 
 #[cfg(test)]
 mod tests {
@@ -350,10 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sse_chat_response() {
-        let sse = "data: {\"type\":\"text_delta\",\"content\":\"hi\"}\n\ndata: {\"type\":\"done\",\"content\":\"hi there\",\"tool_calls\":[]}\n\n";
-        let result = parse_sse_chat_response(sse).unwrap();
-        assert_eq!(result.content, "hi there");
-        assert!(result.tool_calls.is_empty());
+    fn test_parse_sse_content_with_text_deltas() {
+        let sse = "data: {\"type\":\"text_delta\",\"content\":\"hi\"}\n\ndata: {\"type\":\"done\",\"content\":\"hi there\"}\n\n";
+        let result = parse_sse_content(sse).unwrap();
+        assert_eq!(result, "hi there");
     }
 }

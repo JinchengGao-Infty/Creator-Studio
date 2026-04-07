@@ -428,27 +428,63 @@ fn ai_complete_cancel(runtime: tauri::State<AiCompleteRuntime>) -> Result<(), St
     }
 }
 
+// ai_complete and ai_chat still use ai_bridge (legacy JSONL) because:
+// 1. ai_chat needs tool execution (read/write/append/search/rag) which runs in Rust
+// 2. ai_complete needs cancel support via AtomicBool
+// These will migrate to daemon once the Rust tool execution HTTP server is implemented.
+
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_complete(
-    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
+    runtime: tauri::State<'_, AiCompleteRuntime>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
     messages: Vec<serde_json::Value>,
 ) -> Result<String, String> {
-    let daemon_arc = daemon.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        ai_proxy::run_complete(&daemon_arc, provider, parameters, system_prompt, messages)
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_complete lock poisoned".to_string())?;
+        if let Some(prev) = guard.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        *guard = Some(cancel_flag.clone());
+    }
+
+    let cancel_for_task = cancel_flag.clone();
+    let response = match tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::run_complete(provider, parameters, system_prompt, messages, Some(cancel_for_task))
     })
     .await
-    .map_err(|e| format!("ai_complete join error: {e}"))?
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("ai_complete join error: {e}")),
+    };
+
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_complete lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
+        {
+            *guard = None;
+        }
+    }
+
+    response
 }
 
 // ===== AI Chat Command =====
 
 #[tauri::command(rename_all = "camelCase")]
 async fn ai_chat(
-    daemon: tauri::State<'_, Arc<ai_daemon::AIDaemon>>,
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, AiChatRuntime>,
     provider: serde_json::Value,
     parameters: serde_json::Value,
     system_prompt: String,
@@ -457,14 +493,67 @@ async fn ai_chat(
     mode: session::SessionMode,
     chapter_id: Option<String>,
     allow_write: Option<bool>,
-) -> Result<ai_proxy::ChatResponse, String> {
-    let daemon_arc = daemon.inner().clone();
-    // TODO: tool_callback_port will be wired when tool execution server is implemented
-    tauri::async_runtime::spawn_blocking(move || {
-        ai_proxy::run_chat(&daemon_arc, provider, parameters, system_prompt, messages, None)
+) -> Result<ai_bridge::ChatResponse, String> {
+    use tauri::Emitter;
+
+    let request = ai_bridge::ChatRequest {
+        provider,
+        parameters,
+        system_prompt,
+        messages,
+        project_dir,
+        mode,
+        chapter_id,
+        allow_write: allow_write.unwrap_or(false),
+    };
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_chat lock poisoned".to_string())?;
+        if let Some(prev) = guard.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        *guard = Some(cancel_flag.clone());
+    }
+
+    let app_for_start = app.clone();
+    let app_for_end = app.clone();
+    let events = ai_bridge::ChatEventHandler {
+        on_tool_call_start: Arc::new(move |payload| {
+            let _ = app_for_start.emit("ai:tool_call_start", payload);
+        }),
+        on_tool_call_end: Arc::new(move |payload| {
+            let _ = app_for_end.emit("ai:tool_call_end", payload);
+        }),
+    };
+
+    let cancel_for_task = cancel_flag.clone();
+    let response = match tauri::async_runtime::spawn_blocking(move || {
+        ai_bridge::run_chat_with_events(request, Some(events), Some(cancel_for_task))
     })
     .await
-    .map_err(|e| format!("ai_chat join error: {e}"))?
+    {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("ai_chat join error: {e}")),
+    };
+
+    {
+        let mut guard = runtime
+            .cancel_flag
+            .lock()
+            .map_err(|_| "ai_chat lock poisoned".to_string())?;
+        if guard
+            .as_ref()
+            .is_some_and(|flag| Arc::ptr_eq(flag, &cancel_flag))
+        {
+            *guard = None;
+        }
+    }
+
+    response
 }
 
 #[tauri::command(rename_all = "camelCase")]
