@@ -177,10 +177,9 @@ describe('Body limit contract', () => {
     expect(res.status).toBe(400)
   })
 
-  it('unauthenticated requests rejected by auth before body limit', async () => {
+  it('unauthenticated requests rejected by auth before body limit (with Content-Length)', async () => {
     const SECRET = 'test-secret-body-limit'
     const app = createApp(SECRET)
-    // Large body but no auth — should get 401, not 413
     const largeBody = JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) })
     const res = await app.request('/api/compact', {
       method: 'POST',
@@ -188,6 +187,18 @@ describe('Body limit contract', () => {
         'Content-Type': 'application/json',
         'Content-Length': String(Buffer.byteLength(largeBody)),
       },
+      body: largeBody,
+    })
+    expect(res.status).toBe(401) // Auth rejects before body is read
+  })
+
+  it('unauthenticated requests rejected by auth before body limit (no Content-Length)', async () => {
+    const SECRET = 'test-secret-body-limit-2'
+    const app = createApp(SECRET)
+    const largeBody = JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) })
+    const res = await app.request('/api/compact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: largeBody,
     })
     expect(res.status).toBe(401) // Auth rejects before body is read

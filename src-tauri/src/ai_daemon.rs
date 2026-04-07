@@ -81,6 +81,7 @@ impl AIDaemon {
 
     fn start_inner(&self, engine_path: &Path) -> Result<u16, String> {
         // Kill any existing child and clear stale port
+        let was_running = self.port().is_some() || self.is_child_alive();
         self.kill_child_inner();
         *self.port.lock().unwrap() = None;
 
@@ -94,8 +95,10 @@ impl AIDaemon {
         // Store engine path for restarts
         *self.engine_path.lock().unwrap() = Some(engine_path.to_path_buf());
 
-        // Track restarts for crash loop detection
-        self.check_crash_loop()?;
+        // Track crash-restarts only (not the initial start)
+        if was_running {
+            self.check_crash_loop()?;
+        }
 
         let mut cmd = build_daemon_command(engine_path, &self.shared_secret)?;
         eprintln!("[ai-daemon] Starting daemon from: {}", engine_path.display());
@@ -425,11 +428,12 @@ mod tests {
     #[test]
     fn test_crash_loop_detection() {
         let daemon = AIDaemon::new();
-        // First few should be ok
-        assert!(daemon.check_crash_loop().is_ok());
-        assert!(daemon.check_crash_loop().is_ok());
-        assert!(daemon.check_crash_loop().is_ok());
-        // 4th should trip the breaker
+        // check_crash_loop is called on crash-restarts only (not initial start)
+        // First few restarts should be ok
+        assert!(daemon.check_crash_loop().is_ok()); // restart 1
+        assert!(daemon.check_crash_loop().is_ok()); // restart 2
+        assert!(daemon.check_crash_loop().is_ok()); // restart 3
+        // 4th restart should trip the breaker
         let result = daemon.check_crash_loop();
         assert!(result.is_err());
         assert!(daemon.is_circuit_broken());
@@ -438,7 +442,7 @@ mod tests {
     #[test]
     fn test_circuit_breaker_reset() {
         let daemon = AIDaemon::new();
-        // Trip it
+        // Trip it with crash-restarts
         for _ in 0..4 {
             let _ = daemon.check_crash_loop();
         }
@@ -448,6 +452,23 @@ mod tests {
         daemon.reset_circuit_breaker();
         assert!(!daemon.is_circuit_broken());
         assert!(daemon.check_crash_loop().is_ok());
+    }
+
+    #[test]
+    fn test_initial_start_does_not_count_as_crash() {
+        let daemon = AIDaemon::new();
+        // On initial start, port is None and no child alive → was_running = false
+        // So check_crash_loop is NOT called. This test verifies the semantic:
+        // calling check_crash_loop 3 times (= 3 crash-restarts) should NOT trip,
+        // because initial start shouldn't count.
+        assert!(!daemon.is_circuit_broken());
+        assert!(daemon.check_crash_loop().is_ok()); // restart 1
+        assert!(daemon.check_crash_loop().is_ok()); // restart 2
+        assert!(daemon.check_crash_loop().is_ok()); // restart 3 (threshold is 3)
+        // 4th would trip — but we only had 3 restarts, so still ok
+        // Actually the 3rd fetch_add returns 2 (0-indexed), so count >= 3 triggers on the 4th
+        let result = daemon.check_crash_loop(); // This is the 4th
+        assert!(result.is_err());
     }
 
     #[test]

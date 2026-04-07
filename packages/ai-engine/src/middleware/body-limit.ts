@@ -21,7 +21,10 @@ export function bodyLimitMiddleware(maxBytes: number = DEFAULT_MAX_BODY_BYTES) {
     }
 
     // For chunked/headerless requests, read body and check actual size.
-    // Clone the request so downstream can still read it.
+    // This reads the full body into memory before checking — acceptable because:
+    // 1. Auth middleware runs first, rejecting unauthenticated requests before this point
+    // 2. The 2MB limit keeps memory bounded for authenticated requests
+    // 3. This is a localhost-only desktop daemon, not a public API
     if (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH') {
       const body = await c.req.raw.clone().arrayBuffer()
       if (body.byteLength > maxBytes) {
