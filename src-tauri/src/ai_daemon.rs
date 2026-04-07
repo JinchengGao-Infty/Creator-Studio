@@ -497,4 +497,95 @@ mod tests {
         assert_eq!(hex::encode(&[0x00, 0xff, 0x0a]), "00ff0a");
         assert_eq!(hex::encode(&[]), "");
     }
+
+    // ─── Integration tests (require Node.js + server.ts) ───
+
+    /// Find the server.ts file for integration tests.
+    fn find_server_ts() -> Option<PathBuf> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let server_ts = manifest_dir
+            .parent()?
+            .join("packages/ai-engine/src/server.ts");
+        if server_ts.exists() {
+            Some(server_ts)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn test_daemon_start_and_health_check() {
+        let server_ts = match find_server_ts() {
+            Some(p) => p,
+            None => {
+                eprintln!("[test] server.ts not found, skipping integration test");
+                return;
+            }
+        };
+
+        let daemon = AIDaemon::new();
+        let port = daemon.start(&server_ts).expect("Daemon should start");
+        assert!(port > 0);
+        assert_eq!(daemon.port(), Some(port));
+
+        // Health check should pass
+        let result = daemon.health_check();
+        assert!(result.is_ok(), "Health check failed: {:?}", result);
+
+        // ensure_running should return same port
+        let port2 = daemon.ensure_running().expect("ensure_running should work");
+        assert_eq!(port, port2);
+
+        // Stop
+        daemon.stop();
+        assert_eq!(daemon.port(), None);
+    }
+
+    #[test]
+    fn test_daemon_start_nonexistent_binary() {
+        let daemon = AIDaemon::new();
+        let result = daemon.start(Path::new("/nonexistent/binary"));
+        assert!(result.is_err());
+        assert!(daemon.port().is_none());
+    }
+
+    #[test]
+    fn test_daemon_stop_when_not_started() {
+        let daemon = AIDaemon::new();
+        // Should not panic
+        daemon.stop();
+        assert!(daemon.port().is_none());
+    }
+
+    #[test]
+    fn test_daemon_ensure_running_without_start() {
+        let daemon = AIDaemon::new();
+        let result = daemon.ensure_running();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No engine path set"));
+    }
+
+    #[test]
+    fn test_daemon_restart() {
+        let server_ts = match find_server_ts() {
+            Some(p) => p,
+            None => {
+                eprintln!("[test] server.ts not found, skipping integration test");
+                return;
+            }
+        };
+
+        let daemon = AIDaemon::new();
+
+        // Start
+        let port1 = daemon.start(&server_ts).expect("First start should work");
+        assert!(port1 > 0);
+
+        // Start again (should kill old and start new)
+        let port2 = daemon.start(&server_ts).expect("Restart should work");
+        assert!(port2 > 0);
+        // Ports may or may not differ (OS-dependent)
+
+        daemon.stop();
+    }
 }
