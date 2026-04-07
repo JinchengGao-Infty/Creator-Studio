@@ -7,9 +7,7 @@
  *   data: {"type":"error","message":"..."}
  */
 import { Hono } from 'hono'
-import { streamSSE } from 'hono/streaming'
-import { streamText } from 'ai'
-import { ProviderManager } from '../provider.js'
+import { initModel, streamTextRoute } from '../core/stream-helpers.js'
 import type { ProviderConfig, ModelParameters } from '../types.js'
 
 type TransformAction = 'polish' | 'expand' | 'condense' | 'restyle'
@@ -52,7 +50,6 @@ export function transformRoute() {
   const route = new Hono()
 
   route.post('/', async (c) => {
-    const requestId = c.get('requestId') as string
     const body = await c.req.json<TransformRequest>()
 
     if (!body.provider || !body.parameters || !body.text) {
@@ -60,78 +57,30 @@ export function transformRoute() {
     }
 
     const action = body.action ?? 'polish'
-    const providerManager = new ProviderManager()
-    providerManager.addProvider(body.provider)
-    const sdk = providerManager.createSDK(body.provider.id)
-    const model = sdk(body.parameters.model)
+    const model = initModel(body.provider, body.parameters.model)
 
     let systemPrompt = SYSTEM_PROMPTS[action] ?? SYSTEM_PROMPTS.polish
     if (action === 'restyle' && body.style) {
       systemPrompt += `\n\n目标风格：${body.style}`
     }
 
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'transform.start',
-      action,
-      text_length: body.text.length,
-    }))
-
-    const startMs = Date.now()
-
-    return streamSSE(c, async (stream) => {
-      try {
-        const result = streamText({
-          model,
-          messages: [
-            { role: 'system' as const, content: systemPrompt },
-            { role: 'user' as const, content: body.text },
-          ] as any,
-          maxSteps: 1,
-          temperature: action === 'polish' ? 0.3 : 0.7,
-          maxTokens: body.parameters.maxTokens ?? 4000,
-          abortSignal: c.req.raw.signal,
-        })
-
-        let fullText = ''
-        for await (const delta of result.textStream) {
-          if (delta) {
-            fullText += delta
-            await stream.writeSSE({
-              data: JSON.stringify({ type: 'text_delta', content: delta }),
-            })
-          }
-        }
-
-        console.error(JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'info',
-          request_id: requestId,
-          event: 'transform.done',
-          duration_ms: Date.now() - startMs,
-          output_length: fullText.length,
-        }))
-
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'done', content: fullText }),
-        })
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        if (!(err instanceof Error && err.name === 'AbortError')) {
-          console.error(JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'error',
-            request_id: requestId,
-            event: 'transform.error',
-            error: message,
-          }))
-        }
-        await stream.writeSSE({
-          data: JSON.stringify({ type: 'error', message }),
-        })
-      }
+    return streamTextRoute({
+      c,
+      routeName: 'transform',
+      streamTextOptions: {
+        model,
+        messages: [
+          { role: 'system' as const, content: systemPrompt },
+          { role: 'user' as const, content: body.text },
+        ] as any,
+        maxSteps: 1,
+        temperature: action === 'polish' ? 0.3 : 0.7,
+        maxTokens: body.parameters.maxTokens ?? 4000,
+      },
+      startLogExtra: {
+        action,
+        text_length: body.text.length,
+      },
     })
   })
 

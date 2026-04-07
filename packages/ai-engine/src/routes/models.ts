@@ -1,6 +1,7 @@
 /**
- * GET /api/models — Fetch available models from a provider.
+ * POST /api/models — Fetch available models from a provider.
  * Proxies the OpenAI-compatible /models endpoint.
+ * Uses POST because the request body contains the API key.
  */
 import { Hono } from 'hono'
 import { fetchModels } from '../models.js'

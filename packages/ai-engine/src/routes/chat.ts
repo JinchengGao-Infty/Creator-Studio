@@ -13,8 +13,8 @@
  */
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { initModel, structLog } from '../core/stream-helpers.js'
 import { streamText } from 'ai'
-import { ProviderManager } from '../provider.js'
 import { getToolsForSDK } from '../tools.js'
 import type { ProviderConfig, ModelParameters, Message, ToolCallRequest, ToolCallResult } from '../types.js'
 
@@ -23,10 +23,8 @@ interface ChatRequest {
   parameters: ModelParameters
   systemPrompt: string
   messages: Message[]
-  // Tool execution callback URL (Rust tool server)
   toolCallbackUrl?: string
   toolCallbackSecret?: string
-  // Mode controls
   mode?: 'discussion' | 'continue'
   allowWrite?: boolean
 }
@@ -42,12 +40,21 @@ export function chatRoute() {
       return c.json({ error: 'Missing required fields: provider, parameters, systemPrompt, messages' }, 400)
     }
 
-    const providerManager = new ProviderManager()
-    providerManager.addProvider(body.provider)
-    const sdk = providerManager.createSDK(body.provider.id)
-    const model = sdk(body.parameters.model)
+    // Initialize provider — errors caught inside streamSSE for consistent SSE error format
+    let model: ReturnType<typeof initModel>
+    try {
+      model = initModel(body.provider, body.parameters.model)
+    } catch (err: unknown) {
+      // Return SSE error event instead of bare JSON for contract consistency
+      return streamSSE(c, async (stream) => {
+        const message = err instanceof Error ? err.message : String(err)
+        structLog('error', requestId, 'chat.init_error', { error: message })
+        await stream.writeSSE({
+          data: JSON.stringify({ type: 'error', message: `Provider initialization failed: ${message}` }),
+        })
+      })
+    }
 
-    // Build tool execution callback (pass request abort signal for cleanup on disconnect)
     const executeTools = body.toolCallbackUrl
       ? createToolCallback(body.toolCallbackUrl, body.toolCallbackSecret, requestId, c.req.raw.signal)
       : undefined
@@ -61,16 +68,12 @@ export function chatRoute() {
       })),
     ]
 
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      level: 'info',
-      request_id: requestId,
-      event: 'chat.start',
+    structLog('info', requestId, 'chat.start', {
       provider: body.provider.id,
       model: body.parameters.model,
       message_count: body.messages.length,
       mode: body.mode ?? 'discussion',
-    }))
+    })
 
     const startMs = Date.now()
 
@@ -85,8 +88,11 @@ export function chatRoute() {
           topP: body.parameters.topP,
           maxTokens: body.parameters.maxTokens,
           abortSignal: c.req.raw.signal,
+          // Note: onStepFinish fires after each step completes (including tool execution).
+          // tool_call_start and tool_call_end events are batched per step, not real-time.
+          // This is a Vercel AI SDK limitation — real-time events require intercepting
+          // the tool execute callback directly (which we do via createToolCallback).
           onStepFinish: async (step) => {
-            // Report tool calls as they happen
             if (step.toolCalls?.length) {
               for (const tc of step.toolCalls) {
                 await stream.writeSSE({
@@ -115,10 +121,8 @@ export function chatRoute() {
           },
         })
 
-        // Stream text deltas
-        const textStream = result.textStream
         let fullText = ''
-        for await (const delta of textStream) {
+        for await (const delta of result.textStream) {
           if (delta) {
             fullText += delta
             await stream.writeSSE({
@@ -127,21 +131,15 @@ export function chatRoute() {
           }
         }
 
-        // Wait for full result to get final tool calls
         const finalResult = await result
-
         const durationMs = Date.now() - startMs
-        console.error(JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'info',
-          request_id: requestId,
-          event: 'chat.done',
+
+        structLog('info', requestId, 'chat.done', {
           duration_ms: durationMs,
           text_length: fullText.length,
           steps: finalResult.steps?.length ?? 0,
-        }))
+        })
 
-        // Send done event
         const toolCalls = Array.isArray(finalResult.toolCalls)
           ? finalResult.toolCalls.map((tc: any) => ({
               id: tc.toolCallId ?? '',
@@ -159,17 +157,13 @@ export function chatRoute() {
         })
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
+        const isAbort = err instanceof Error && err.name === 'AbortError'
 
-        // Don't log abort errors (user cancelled)
-        if (!(err instanceof Error && err.name === 'AbortError')) {
-          console.error(JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'error',
-            request_id: requestId,
-            event: 'chat.error',
+        if (!isAbort) {
+          structLog('error', requestId, 'chat.error', {
             error: message,
             duration_ms: Date.now() - startMs,
-          }))
+          })
         }
 
         await stream.writeSSE({
@@ -201,14 +195,12 @@ function createToolCallback(
     }
 
     const results: ToolCallResult[] = []
-    // Execute tools sequentially (maintain order, avoid overwhelming Rust)
     for (const call of calls) {
       try {
         const startMs = Date.now()
         const timeoutController = new AbortController()
-        const timeoutId = setTimeout(() => timeoutController.abort(), 30_000) // 30s per tool
+        const timeoutId = setTimeout(() => timeoutController.abort(), 30_000)
 
-        // Combine parent abort signal (client disconnect) with per-tool timeout
         const combinedSignal = parentSignal
           ? AbortSignal.any([parentSignal, timeoutController.signal])
           : timeoutController.signal
@@ -234,16 +226,12 @@ function createToolCallback(
         const data = await res!.json() as { result?: string; error?: string }
         const durationMs = Date.now() - startMs
 
-        console.error(JSON.stringify({
-          ts: new Date().toISOString(),
-          level: 'info',
-          request_id: requestId,
-          event: 'tool_callback.done',
+        structLog('info', requestId, 'tool_callback.done', {
           tool_name: call.name,
           tool_call_id: call.id,
           duration_ms: durationMs,
           has_error: !!data.error,
-        }))
+        })
 
         results.push({
           id: call.id,
