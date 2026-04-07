@@ -31,15 +31,16 @@ export function modelsRoute() {
     try {
       const startMs = Date.now()
 
-      // Apply timeout — AbortController actually cancels the underlying fetch
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
+      // Combine request-level abort (client disconnect) with timeout
+      const timeoutController = new AbortController()
+      const timeoutId = setTimeout(() => timeoutController.abort(), MODELS_FETCH_TIMEOUT_MS)
+      const combinedSignal = AbortSignal.any([c.req.raw.signal, timeoutController.signal])
 
       let models: string[]
       try {
-        models = await fetchModels(body.baseURL, body.apiKey, body.providerType, controller.signal)
+        models = await fetchModels(body.baseURL, body.apiKey, body.providerType, combinedSignal)
       } catch (err) {
-        if (controller.signal.aborted) {
+        if (timeoutController.signal.aborted) {
           throw new Error(`Models fetch timed out after ${MODELS_FETCH_TIMEOUT_MS / 1000}s`)
         }
         throw err
