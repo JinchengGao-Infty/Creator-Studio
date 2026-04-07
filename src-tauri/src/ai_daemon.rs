@@ -13,7 +13,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const PROTOCOL_VERSION: &str = "2.0";
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -35,6 +34,8 @@ pub struct AIDaemon {
     last_restart: Mutex<Instant>,
     circuit_broken: AtomicBool,
     engine_path: Mutex<Option<PathBuf>>,
+    /// Lifecycle lock: prevents concurrent start/stop/ensure_running races.
+    lifecycle: Mutex<()>,
 }
 
 impl AIDaemon {
@@ -47,6 +48,7 @@ impl AIDaemon {
             last_restart: Mutex::new(Instant::now()),
             circuit_broken: AtomicBool::new(false),
             engine_path: Mutex::new(None),
+            lifecycle: Mutex::new(()),
         }
     }
 
@@ -71,9 +73,15 @@ impl AIDaemon {
     }
 
     /// Start the daemon process. Blocks until the daemon reports its port.
+    /// Holds the lifecycle lock to prevent concurrent start/stop races.
     pub fn start(&self, engine_path: &Path) -> Result<u16, String> {
+        let _lifecycle_guard = self.lifecycle.lock().unwrap();
+        self.start_inner(engine_path)
+    }
+
+    fn start_inner(&self, engine_path: &Path) -> Result<u16, String> {
         // Kill any existing child
-        self.kill_child();
+        self.kill_child_inner();
 
         // Check circuit breaker
         if self.is_circuit_broken() {
@@ -98,45 +106,40 @@ impl AIDaemon {
             )
         })?;
 
-        // Read the first line from stdout to get the port
+        // Read the first line from stdout to get the port.
+        // Use a separate thread + channel to implement real timeout
+        // (BufRead::read_line on a blocking pipe cannot be interrupted).
         let stdout = child
             .stdout
             .take()
             .ok_or("Failed to capture daemon stdout")?;
-        let mut reader = std::io::BufReader::new(stdout);
-        let mut first_line = String::new();
 
-        // Wait for startup message with timeout
-        let start = Instant::now();
-        loop {
-            if start.elapsed() > STARTUP_TIMEOUT {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut first_line = String::new();
+            match reader.read_line(&mut first_line) {
+                Ok(0) => tx.send(Err("Daemon exited before reporting port (EOF)".to_string())).ok(),
+                Ok(_) => tx.send(Ok(first_line)).ok(),
+                Err(e) => tx.send(Err(format!("Failed to read daemon stdout: {e}"))).ok(),
+            };
+        });
+
+        let first_line = rx
+            .recv_timeout(STARTUP_TIMEOUT)
+            .map_err(|_| {
                 let _ = child.kill();
-                return Err(format!(
+                format!(
                     "AI daemon startup timeout ({}s). The engine at '{}' did not respond.",
                     STARTUP_TIMEOUT.as_secs(),
                     engine_path.display()
-                ));
-            }
-
-            match reader.read_line(&mut first_line) {
-                Ok(0) => {
-                    // EOF — process exited
-                    let status = child.wait().ok();
-                    return Err(format!(
-                        "AI daemon exited before reporting port. Exit status: {status:?}"
-                    ));
-                }
-                Ok(_) => break,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    return Err(format!("Failed to read daemon startup message: {e}"));
-                }
-            }
-        }
+                )
+            })?
+            .map_err(|e| {
+                let _ = child.kill();
+                let status = child.wait().ok();
+                format!("{e}. Exit status: {status:?}")
+            })?;
 
         let startup_msg: DaemonStartupMessage = serde_json::from_str(first_line.trim())
             .map_err(|e| {
@@ -158,11 +161,11 @@ impl AIDaemon {
 
         let port = startup_msg.port;
         *self.port.lock().unwrap() = Some(port);
+        let pid = child.id();
         *self.child.lock().unwrap() = Some(child);
 
         eprintln!(
-            "[ai-daemon] Daemon started on port {port} (pid={}, version={})",
-            self.child_pid().unwrap_or(0),
+            "[ai-daemon] Daemon started on port {port} (pid={pid}, version={})",
             startup_msg.version
         );
 
@@ -171,7 +174,8 @@ impl AIDaemon {
 
     /// Stop the daemon gracefully.
     pub fn stop(&self) {
-        self.kill_child();
+        let _lifecycle_guard = self.lifecycle.lock().unwrap();
+        self.kill_child_inner();
         *self.port.lock().unwrap() = None;
         eprintln!("[ai-daemon] Daemon stopped");
     }
@@ -204,9 +208,12 @@ impl AIDaemon {
     }
 
     /// Ensure the daemon is running. If not, try to restart.
+    /// Holds the lifecycle lock to prevent concurrent races.
     pub fn ensure_running(&self) -> Result<u16, String> {
+        let _lifecycle_guard = self.lifecycle.lock().unwrap();
+
         // Fast path: check if port exists and child is alive
-        if let Some(port) = self.port() {
+        if let Some(port) = *self.port.lock().unwrap() {
             if self.is_child_alive() {
                 return Ok(port);
             }
@@ -221,7 +228,7 @@ impl AIDaemon {
             .clone()
             .ok_or("No engine path set — daemon was never started")?;
 
-        self.start(&path)
+        self.start_inner(&path)
     }
 
     /// Reset the circuit breaker (user-initiated retry).
@@ -232,14 +239,6 @@ impl AIDaemon {
     }
 
     // ─── Private helpers ───
-
-    fn child_pid(&self) -> Option<u32> {
-        self.child
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|c| c.id())
-    }
 
     fn is_child_alive(&self) -> bool {
         let mut guard = self.child.lock().unwrap();
@@ -253,16 +252,19 @@ impl AIDaemon {
         }
     }
 
-    fn kill_child(&self) {
+    /// Kill child without holding the lifecycle lock (called from within locked methods).
+    fn kill_child_inner(&self) {
         let mut guard = self.child.lock().unwrap();
         if let Some(mut child) = guard.take() {
-            eprintln!("[ai-daemon] Killing child process (pid={})", child.id());
+            let pid = child.id();
+            eprintln!("[ai-daemon] Killing child process (pid={pid})");
+            // Drop the mutex guard before sleeping to avoid holding it too long
+            drop(guard);
 
-            // Try graceful shutdown first
             #[cfg(unix)]
             {
                 unsafe {
-                    libc::kill(child.id() as i32, libc::SIGTERM);
+                    libc::kill(pid as i32, libc::SIGTERM);
                 }
                 // Wait briefly for graceful exit
                 std::thread::sleep(GRACEFUL_SHUTDOWN_TIMEOUT);
@@ -311,7 +313,7 @@ impl AIDaemon {
 
 impl Drop for AIDaemon {
     fn drop(&mut self) {
-        self.kill_child();
+        self.kill_child_inner();
     }
 }
 

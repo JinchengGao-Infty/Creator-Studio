@@ -47,9 +47,9 @@ export function chatRoute() {
     const sdk = providerManager.createSDK(body.provider.id)
     const model = sdk(body.parameters.model)
 
-    // Build tool execution callback
+    // Build tool execution callback (pass request abort signal for cleanup on disconnect)
     const executeTools = body.toolCallbackUrl
-      ? createToolCallback(body.toolCallbackUrl, body.toolCallbackSecret, requestId)
+      ? createToolCallback(body.toolCallbackUrl, body.toolCallbackSecret, requestId, c.req.raw.signal)
       : undefined
 
     const allMessages = [
@@ -189,6 +189,7 @@ function createToolCallback(
   callbackUrl: string,
   secret: string | undefined,
   requestId: string,
+  parentSignal?: AbortSignal,
 ): (calls: ToolCallRequest[]) => Promise<ToolCallResult[]> {
   return async (calls) => {
     const headers: Record<string, string> = {
@@ -204,25 +205,33 @@ function createToolCallback(
     for (const call of calls) {
       try {
         const startMs = Date.now()
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 30_000) // 30s per tool
+        const timeoutController = new AbortController()
+        const timeoutId = setTimeout(() => timeoutController.abort(), 30_000) // 30s per tool
 
-        const res = await fetch(callbackUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ id: call.id, name: call.name, args: call.args }),
-          signal: controller.signal,
-        })
+        // Combine parent abort signal (client disconnect) with per-tool timeout
+        const combinedSignal = parentSignal
+          ? AbortSignal.any([parentSignal, timeoutController.signal])
+          : timeoutController.signal
 
-        clearTimeout(timeoutId)
+        let res: Response
+        try {
+          res = await fetch(callbackUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ id: call.id, name: call.name, args: call.args }),
+            signal: combinedSignal,
+          })
+        } finally {
+          clearTimeout(timeoutId)
+        }
 
-        if (!res.ok) {
-          const errText = await res.text()
-          results.push({ id: call.id, result: '', error: `Tool server error ${res.status}: ${errText}` })
+        if (!res!.ok) {
+          const errText = await res!.text()
+          results.push({ id: call.id, result: '', error: `Tool server error ${res!.status}: ${errText}` })
           continue
         }
 
-        const data = await res.json() as { result?: string; error?: string }
+        const data = await res!.json() as { result?: string; error?: string }
         const durationMs = Date.now() - startMs
 
         console.error(JSON.stringify({

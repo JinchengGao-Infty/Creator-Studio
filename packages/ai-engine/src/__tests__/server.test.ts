@@ -107,6 +107,27 @@ describe('Auth middleware', () => {
     expect(body.error).toContain('Origin not allowed')
   })
 
+  it('rejects localhost.evil.com origin bypass attempt', async () => {
+    const app = makeApp(SECRET)
+    const evilOrigins = [
+      'http://localhost.evil.com',
+      'http://localhost.evil.com:1420',
+      'http://127.0.0.1.evil.com',
+    ]
+    for (const origin of evilOrigins) {
+      const res = await app.request('/api/compact', {
+        method: 'POST',
+        body: '{}',
+        headers: {
+          ...authHeader(SECRET),
+          'Content-Type': 'application/json',
+          Origin: origin,
+        },
+      })
+      expect(res.status).toBe(403)
+    }
+  })
+
   it('allows requests from localhost origins', async () => {
     const app = makeApp(SECRET)
     const origins = [
