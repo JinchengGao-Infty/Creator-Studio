@@ -92,9 +92,6 @@ impl AIDaemon {
             );
         }
 
-        // Store engine path for restarts
-        *self.engine_path.lock().unwrap() = Some(engine_path.to_path_buf());
-
         // Track crash-restarts only (not the initial start)
         if was_running {
             self.check_crash_loop()?;
@@ -167,6 +164,9 @@ impl AIDaemon {
 
         let port = startup_msg.port;
         *self.port.lock().unwrap() = Some(port);
+        // Store engine path only on success — failed starts leave it empty
+        // so ensure_running() will re-discover next time
+        *self.engine_path.lock().unwrap() = Some(engine_path.to_path_buf());
         let pid = child.id();
         *self.child.lock().unwrap() = Some(child);
 
