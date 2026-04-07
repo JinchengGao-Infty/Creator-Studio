@@ -132,7 +132,7 @@ describe('Error response contract', () => {
 })
 
 describe('Body limit contract', () => {
-  it('rejects oversized request bodies with 413', async () => {
+  it('rejects oversized request bodies with 413 (Content-Length)', async () => {
     const app = createApp()
     // 3MB body exceeds 2MB limit
     const largeBody = JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) })
@@ -145,5 +145,51 @@ describe('Body limit contract', () => {
       body: largeBody,
     })
     expect(res.status).toBe(413)
+  })
+
+  it('rejects oversized request bodies without Content-Length header', async () => {
+    const app = createApp()
+    // Send large body without Content-Length (simulates chunked transfer)
+    const largeBody = JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) })
+    const res = await app.request('/api/compact', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // No Content-Length header — body-limit must read actual body
+      },
+      body: largeBody,
+    })
+    expect(res.status).toBe(413)
+  })
+
+  it('allows normal-sized requests through', async () => {
+    const app = createApp()
+    const res = await app.request('/api/compact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: { id: 'x' },
+        parameters: { model: 'x' },
+        messages: [],
+      }),
+    })
+    // Should pass body limit (get 400 for validation, not 413)
+    expect(res.status).toBe(400)
+  })
+
+  it('unauthenticated requests rejected by auth before body limit', async () => {
+    const SECRET = 'test-secret-body-limit'
+    const app = createApp(SECRET)
+    // Large body but no auth — should get 401, not 413
+    const largeBody = JSON.stringify({ data: 'x'.repeat(3 * 1024 * 1024) })
+    const res = await app.request('/api/compact', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(largeBody)),
+      },
+      body: largeBody,
+    })
+    expect(res.status).toBe(401) // Auth rejects before body is read
   })
 })

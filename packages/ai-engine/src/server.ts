@@ -24,13 +24,17 @@ const PROTOCOL_VERSION = '2.0'
 export function createApp(sharedSecret?: string) {
   const app = new Hono()
 
-  // Global middleware
+  // Global middleware — order matters:
+  // 1. Request ID first (needed by all subsequent middleware/routes)
+  // 2. Error handler wraps everything
+  // 3. Auth BEFORE body limit (reject unauthenticated before reading body)
+  // 4. Body limit after auth (prevents DoS from authenticated-only routes)
   app.use('*', requestIdMiddleware())
   app.use('*', errorMiddleware())
-  app.use('/api/*', bodyLimitMiddleware())
   if (sharedSecret) {
     app.use('/api/*', authMiddleware(sharedSecret))
   }
+  app.use('/api/*', bodyLimitMiddleware())
 
   // Routes
   app.route('/health', healthRoute(PROTOCOL_VERSION))
