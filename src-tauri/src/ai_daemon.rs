@@ -226,14 +226,14 @@ impl AIDaemon {
             eprintln!("[ai-daemon] Child process is dead, attempting restart...");
         }
 
-        // Restart — if engine_path was never set (startup failed), re-discover it
+        // Restart — if engine_path was never set (startup failed), re-discover it.
+        // Do NOT cache the discovered path here — start_inner will cache it
+        // only on successful startup, so failed attempts allow re-discovery.
         let path = match self.engine_path.lock().unwrap().clone() {
             Some(p) => p,
             None => {
                 eprintln!("[ai-daemon] No engine path set, attempting path discovery...");
-                let discovered = crate::ai_bridge::get_ai_engine_path()?;
-                *self.engine_path.lock().unwrap() = Some(discovered.clone());
-                discovered
+                crate::ai_bridge::get_ai_engine_path()?
             }
         };
 
