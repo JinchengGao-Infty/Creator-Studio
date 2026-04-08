@@ -323,6 +323,30 @@ describe('POST /api/chat', () => {
     expect(res.status).toBe(400)
   })
 
+  it('rejects non-array messages (prevents .map() crash)', async () => {
+    const app = makeApp()
+    const res = await postJSON(app, '/api/chat', {
+      provider: FAKE_PROVIDER,
+      parameters: VALID_PARAMS,
+      systemPrompt: 'test',
+      messages: 'not-an-array', // truthy but not Array
+    })
+    expect(res.status).toBe(400)
+    const body = await res.json() as any
+    expect(body.error).toContain('array')
+  })
+
+  it('rejects object messages (prevents .map() crash)', async () => {
+    const app = makeApp()
+    const res = await postJSON(app, '/api/chat', {
+      provider: FAKE_PROVIDER,
+      parameters: VALID_PARAMS,
+      systemPrompt: 'test',
+      messages: { role: 'user', content: 'hi' }, // truthy object but not array
+    })
+    expect(res.status).toBe(400)
+  })
+
   it('returns SSE for valid chat request', async () => {
     const app = makeApp()
     const res = await postJSON(app, '/api/chat', {

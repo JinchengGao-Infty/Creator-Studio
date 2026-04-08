@@ -222,6 +222,23 @@ describe('Body limit — edge cases', () => {
     expect(res.status).toBe(413)
   })
 
+  it('rejects body with malformed Content-Length that looks numeric', async () => {
+    const app = makeApp()
+    // "1abc" parses to 1 via parseInt but is not a valid pure number
+    // Should fall through to actual body check, not trust the header
+    const largeBody = 'x'.repeat(3 * 1024 * 1024)
+    const res = await app.request('/api/extract', {
+      method: 'POST',
+      body: largeBody,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': '1abc', // malformed
+      },
+    })
+    // Should still be rejected via actual body size check
+    expect(res.status).toBe(413)
+  })
+
   it('does not limit GET requests', async () => {
     const app = makeApp()
     // GET /health should not trigger body limit check
