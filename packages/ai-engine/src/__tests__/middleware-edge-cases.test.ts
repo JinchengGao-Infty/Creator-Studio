@@ -512,6 +512,35 @@ describe('withRetry — edge cases', () => {
     expect(result).toBe('ok')
     expect(calls).toBe(2)
   })
+
+  it('does NOT retry when status code appears as substring (false positive guard)', async () => {
+    let calls = 0
+    // "port 5000" should NOT match retryable code 500
+    await expect(
+      withRetry(
+        () => {
+          calls++
+          throw new Error('Failed to connect to port 5000')
+        },
+        { initialDelayMs: 10, maxRetries: 2, retryableStatusCodes: [500] },
+      ),
+    ).rejects.toThrow('port 5000')
+    expect(calls).toBe(1) // no retry — 5000 does not match 500
+  })
+
+  it('retries on exact status code match with surrounding text', async () => {
+    let calls = 0
+    const result = await withRetry(
+      () => {
+        calls++
+        if (calls === 1) throw new Error('Provider returned 500 Internal Server Error')
+        return 'ok'
+      },
+      { initialDelayMs: 10, retryableStatusCodes: [500] },
+    )
+    expect(result).toBe('ok')
+    expect(calls).toBe(2) // retried once
+  })
 })
 
 // ──────────────────────────────────────────────
