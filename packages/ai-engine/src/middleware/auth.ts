@@ -53,7 +53,12 @@ export function authMiddleware(sharedSecret: string) {
       return c.json({ error: 'Missing Authorization header' }, 401)
     }
 
-    const [scheme, token] = authHeader.split(' ', 2)
+    const parts = authHeader.split(' ')
+    // Strict: exactly "Bearer <token>" — reject extra segments or trailing content
+    if (parts.length !== 2) {
+      return c.json({ error: 'Invalid bearer token' }, 401)
+    }
+    const [scheme, token] = parts
     if (scheme !== 'Bearer' || !token || !safeCompare(token, sharedSecret)) {
       return c.json({ error: 'Invalid bearer token' }, 401)
     }

@@ -356,10 +356,9 @@ pub fn fetch_models(
     let response: Value = serde_json::from_str(&line)
         .map_err(|e| format!("Failed to parse response: {e}. line={line:?}"))?;
 
-    // Take child out of guard — we'll wait manually below
-    let mut child = guard.take().unwrap();
-
-    match response["type"].as_str() {
+    // Parse response while guard still protects against zombie.
+    // Only take child after all fallible validation is done.
+    let result = match response["type"].as_str() {
         Some("models") => {
             let models = response["models"]
                 .as_array()
@@ -367,18 +366,20 @@ pub fn fetch_models(
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect::<Vec<_>>();
-            let _ = child.wait();
             Ok(models)
         }
         Some("error") => {
-            let _ = child.wait();
             Err(response["message"].as_str().unwrap_or("Unknown error").to_string())
         }
         _ => {
-            let _ = child.wait();
             Err(format!("Unknown response: {line}"))
         }
-    }
+    };
+
+    // All validation passed — take child from guard and wait
+    let mut child = guard.take().unwrap();
+    let _ = child.wait();
+    result
 }
 
 pub fn generate_compact_summary(
@@ -1002,9 +1003,15 @@ pub fn run_chat_with_events(
             }
             Some("tool_call") => {
                 last_progress = Instant::now(); // Recognized response — refresh timeout
-                let calls = response["calls"]
-                    .as_array()
-                    .ok_or("Invalid tool_call format")?;
+                let calls = match response["calls"].as_array() {
+                    Some(arr) => arr,
+                    None => {
+                        drop(stdin);
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Invalid tool_call format".to_string());
+                    }
+                };
 
                 let mut results = Vec::new();
 

@@ -225,17 +225,18 @@ function createToolCallback(
             body: JSON.stringify({ id: call.id, name: call.name, args: call.args }),
             signal: combinedSignal,
           })
+
+          if (!res!.ok) {
+            const errText = await res!.text()
+            results.push({ id: call.id, result: '', error: `Tool server error ${res!.status}: ${errText}` })
+            continue
+          }
+
+          var data = await res!.json() as { result?: string; error?: string }
         } finally {
+          // Clear timeout AFTER body is fully consumed, not just after headers
           clearTimeout(timeoutId)
         }
-
-        if (!res!.ok) {
-          const errText = await res!.text()
-          results.push({ id: call.id, result: '', error: `Tool server error ${res!.status}: ${errText}` })
-          continue
-        }
-
-        const data = await res!.json() as { result?: string; error?: string }
         const durationMs = Date.now() - startMs
 
         structLog('info', requestId, 'tool_callback.done', {
