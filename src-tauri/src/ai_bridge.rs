@@ -899,7 +899,8 @@ pub fn run_chat_with_events(
 
         let line = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(line)) => {
-                last_progress = Instant::now();
+                // Don't refresh progress timer here — only refresh on recognized response types
+                // to prevent unknown/noise lines from keeping the loop alive indefinitely (livelock).
                 line
             }
             Ok(Err(err)) => {
@@ -947,6 +948,7 @@ pub fn run_chat_with_events(
                 return Err(message.to_string());
             }
             Some("tool_call") => {
+                last_progress = Instant::now(); // Recognized response — refresh timeout
                 let calls = response["calls"]
                     .as_array()
                     .ok_or("Invalid tool_call format")?;

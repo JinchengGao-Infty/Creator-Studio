@@ -654,10 +654,15 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         }
       }
 
-      // Filter out injected system messages (e.g. "已放弃本次续写草稿。") —
-      // mid-conversation system role messages can confuse LLMs.
+      // Filter out noise system messages (e.g. "已放弃本次续写草稿。") that can
+      // confuse LLMs, but KEEP compact summary messages (start with "[系统摘要]")
+      // which contain critical conversation context.
       const messagesForAi: ChatMessage[] = workingMessages
-        .filter((m) => m.role === "user" || m.role === "assistant")
+        .filter((m) => {
+          if (m.role === "user" || m.role === "assistant") return true;
+          if (m.role === "system" && m.content.startsWith("[系统摘要]")) return true;
+          return false;
+        })
         .map((m) => ({
           role: m.role as ChatMessage["role"],
           content: m.content,
