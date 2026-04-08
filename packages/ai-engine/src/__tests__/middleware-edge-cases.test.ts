@@ -150,6 +150,19 @@ describe('Auth — edge cases', () => {
     expect(res.status).toBe(400) // passes auth, fails validation
   })
 
+  it('allows IPv6 localhost [::1] origin', async () => {
+    const app = makeApp(SECRET)
+    const res = await app.request('/api/compact', {
+      method: 'POST',
+      body: JSON.stringify({ provider: null, parameters: null, messages: [] }),
+      headers: {
+        ...authHeaders(SECRET),
+        Origin: 'http://[::1]:1420',
+      },
+    })
+    expect(res.status).toBe(400) // passes auth + origin check
+  })
+
   it('allows https://127.0.0.1 origin', async () => {
     const app = makeApp(SECRET)
     const res = await app.request('/api/compact', {

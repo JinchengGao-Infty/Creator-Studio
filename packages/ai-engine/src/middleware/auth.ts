@@ -7,9 +7,16 @@ import { timingSafeEqual } from 'node:crypto'
 
 /** Constant-time string comparison to prevent timing attacks. */
 function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false
+  // Pad both to the same length to avoid leaking token length via timing.
+  // timingSafeEqual requires equal-length buffers; without padding,
+  // an early return on length mismatch would reveal the secret's length.
+  const maxLen = Math.max(a.length, b.length)
+  const bufA = Buffer.alloc(maxLen)
+  const bufB = Buffer.alloc(maxLen)
+  Buffer.from(a, 'utf-8').copy(bufA)
+  Buffer.from(b, 'utf-8').copy(bufB)
   try {
-    return timingSafeEqual(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8'))
+    return a.length === b.length && timingSafeEqual(bufA, bufB)
   } catch {
     return false
   }
@@ -21,8 +28,11 @@ function isAllowedOrigin(origin: string): boolean {
     const url = new URL(origin)
     const hostname = url.hostname
     const protocol = url.protocol
-    // Only allow http/https from localhost/127.0.0.1
+    // Only allow http/https from localhost/127.0.0.1/[::1]
+    // Note: Bun's URL parser keeps brackets for IPv6 (hostname === '[::1]'),
+    // while Node.js strips them (hostname === '::1'). Handle both.
     const isLocalhostHost = hostname === 'localhost' || hostname === '127.0.0.1'
+      || hostname === '::1' || hostname === '[::1]'
     const isAllowedProtocol = protocol === 'http:' || protocol === 'https:'
     return isLocalhostHost && isAllowedProtocol
   } catch {

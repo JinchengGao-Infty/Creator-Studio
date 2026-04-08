@@ -74,7 +74,8 @@ export function transformRoute(limiter?: ConcurrencyLimiter) {
           { role: 'user' as const, content: body.text },
         ] as any,
         maxSteps: 1,
-        temperature: action === 'polish' ? 0.3 : 0.7,
+        temperature: body.parameters.temperature ?? (action === 'polish' ? 0.3 : 0.7),
+        topP: body.parameters.topP,
         maxTokens: body.parameters.maxTokens ?? 4000,
       },
       startLogExtra: {
