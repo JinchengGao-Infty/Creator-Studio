@@ -567,10 +567,25 @@ mod tests {
 
     #[test]
     fn test_daemon_ensure_running_without_start() {
+        // ensure_running() now re-discovers engine_path when it's None,
+        // via get_ai_engine_path(). If no engine is found on the system,
+        // it returns an error; if found (e.g. via env override), it
+        // attempts startup. Either way, it should not panic.
         let daemon = AIDaemon::new();
         let result = daemon.ensure_running();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No engine path set"));
+        // Result depends on environment: Err if no engine path found,
+        // or a start attempt (which may succeed or fail).
+        // The key invariant: it must not panic.
+        match result {
+            Ok(port) => {
+                assert!(port > 0);
+                daemon.stop();
+            }
+            Err(e) => {
+                // Should be a meaningful error, not empty
+                assert!(!e.is_empty(), "Error message should not be empty");
+            }
+        }
     }
 
     #[test]
