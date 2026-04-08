@@ -18,9 +18,12 @@ export function bodyLimitMiddleware(maxBytes: number = DEFAULT_MAX_BODY_BYTES) {
           413,
         )
       }
+      // Content-Length present and valid → skip expensive arrayBuffer check
+      await next()
+      return
     }
 
-    // For chunked/headerless requests, read body and check actual size.
+    // For chunked/headerless requests (no Content-Length), read body and check actual size.
     // This reads the full body into memory before checking — acceptable because:
     // 1. Auth middleware runs first, rejecting unauthenticated requests before this point
     // 2. The 2MB limit keeps memory bounded for authenticated requests

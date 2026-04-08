@@ -34,9 +34,11 @@ function isRetryable(err: unknown, retryableStatusCodes: number[]): boolean {
     }
     // Abort errors are never retryable
     if (err.name === 'AbortError') return false
-    // Check for status code in error message (Vercel AI SDK pattern)
+    // Check for status code in error message (Vercel AI SDK pattern).
+    // Use word-boundary regex to avoid false positives (e.g. "port 5000" matching 500).
     for (const code of retryableStatusCodes) {
-      if (err.message.includes(`${code}`)) return true
+      const pattern = new RegExp(`\\b${code}\\b`)
+      if (pattern.test(err.message)) return true
     }
   }
   return false
