@@ -664,14 +664,14 @@ pub fn run_complete(
     let timeout = complete_timeout();
 
     let child = spawn_ai_engine(&ai_engine_path)?;
+    // ChildGuard protects against zombie processes on early `?` returns.
+    // We keep it alive through stdin.take(), writeln!, and flush — only
+    // take the child out when entering the main loop (which has its own kill/wait).
     let mut guard = ChildGuard::new(child);
     let child_ref = guard.0.as_mut().unwrap();
 
     let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
-
-    // Take child from guard — the loop below handles all kill/wait paths
-    let mut child = guard.take().unwrap();
 
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let reader_cancel = cancel_flag.clone();
@@ -741,10 +741,14 @@ pub fn run_complete(
         "messages": messages,
     });
 
+    // These `?` returns are protected by ChildGuard (kills+waits child on drop)
     writeln!(stdin, "{}", init_request.to_string())
         .map_err(|e| format!("Failed to write to stdin: {e}"))?;
     stdin.flush()
         .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+    // Take child from guard AFTER all fallible init — loop handles its own kill/wait
+    let mut child = guard.take().unwrap();
 
     let started = Instant::now();
     loop {
@@ -838,14 +842,13 @@ pub fn run_chat_with_events(
     let direct_return_tool_results = provider_base_url.contains("/geminicli/v1");
 
     let child = spawn_ai_engine(&ai_engine_path)?;
+    // ChildGuard protects against zombie processes on early `?` returns.
+    // Keep alive through stdin.take(), writeln!, flush — take child only before main loop.
     let mut guard = ChildGuard::new(child);
     let child_ref = guard.0.as_mut().unwrap();
 
     let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
     let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
-
-    // Take child from guard — the loop below handles all kill/wait paths
-    let mut child = guard.take().unwrap();
 
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let reader_cancel = cancel_flag.clone();
@@ -916,10 +919,14 @@ pub fn run_chat_with_events(
         "messages": request.messages,
     });
 
+    // These `?` returns are protected by ChildGuard (kills+waits child on drop)
     writeln!(stdin, "{}", init_request.to_string())
         .map_err(|e| format!("Failed to write to stdin: {e}"))?;
     stdin.flush()
         .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+
+    // Take child from guard AFTER all fallible init — loop handles its own kill/wait
+    let mut child = guard.take().unwrap();
 
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let timeout = chat_timeout();

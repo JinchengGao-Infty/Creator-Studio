@@ -12,8 +12,8 @@ export function bodyLimitMiddleware(maxBytes: number = DEFAULT_MAX_BODY_BYTES) {
     const contentLength = c.req.header('Content-Length')
     if (contentLength) {
       const size = parseInt(contentLength, 10)
-      // Only trust Content-Length if it's a valid pure integer (no trailing chars like "1abc")
-      const isValidNumber = !isNaN(size) && String(size) === contentLength.trim()
+      // Only trust Content-Length if it's a valid non-negative pure integer
+      const isValidNumber = !isNaN(size) && size >= 0 && String(size) === contentLength.trim()
       if (isValidNumber && size > maxBytes) {
         return c.json(
           { error: `Request body too large (${size} bytes, max ${maxBytes} bytes)` },
