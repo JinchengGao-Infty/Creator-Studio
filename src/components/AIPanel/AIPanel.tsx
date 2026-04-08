@@ -257,6 +257,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const streamTokenRef = useRef(0);
   const toolCallStartTimesRef = useRef<Map<string, number>>(new Map());
   const realStreamingRef = useRef(false);
+  // Ref mirror of messagesInSession — always holds the latest value,
+  // safe to read from async functions without stale closure issues.
+  const messagesRef = useRef<PanelMessage[]>([]);
+  messagesRef.current = messagesInSession;
 
   const currentKey = useMemo(() => storageCurrentKey(projectPath), [projectPath]);
 
@@ -544,11 +548,14 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     const normalized = userText.trim().replace(/[。！？.!?]+$/g, "");
     if (!normalized) return "draft";
 
+    // Read from ref to get the latest messages (avoids stale closure)
+    const currentMessages = messagesRef.current;
+
     // Only treat "确认/可以/好" as apply when the most recent assistant message is a draft preview.
     let lastAssistantIndex = -1;
     let lastDraftIndex = -1;
-    for (let i = messagesInSession.length - 1; i >= 0; i -= 1) {
-      const msg = messagesInSession[i];
+    for (let i = currentMessages.length - 1; i >= 0; i -= 1) {
+      const msg = currentMessages[i];
       if (lastAssistantIndex === -1 && msg.role === "assistant") lastAssistantIndex = i;
       if (lastDraftIndex === -1 && msg.role === "assistant" && msg.metadata?.applied === false) {
         lastDraftIndex = i;
@@ -616,7 +623,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       const uiUser = toPanelMessage(createdUser);
       setMessagesInSession((prev) => [...prev, uiUser]);
 
-      let workingMessages: PanelMessage[] = [...messagesInSession, uiUser];
+      // Build working messages from ref (latest state) + uiUser.
+      // setState is async so messagesRef may not yet include uiUser — append it explicitly.
+      // Deduplicate by id in case a re-render already added it.
+      const currentMsgs = messagesRef.current;
+      let workingMessages: PanelMessage[] = currentMsgs.some((m) => m.id === uiUser.id)
+        ? [...currentMsgs]
+        : [...currentMsgs, uiUser];
       const compactThreshold = COMPACT_CONFIG.maxTokens * COMPACT_CONFIG.compactThreshold;
 
       if (estimateTokensForMessages(workingMessages) > compactThreshold) {
@@ -641,10 +654,14 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         }
       }
 
-      const messagesForAi: ChatMessage[] = workingMessages.map((m) => ({
-        role: m.role as ChatMessage["role"],
-        content: m.content,
-      }));
+      // Filter out injected system messages (e.g. "已放弃本次续写草稿。") —
+      // mid-conversation system role messages can confuse LLMs.
+      const messagesForAi: ChatMessage[] = workingMessages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as ChatMessage["role"],
+          content: m.content,
+        }));
 
       const systemPrompt =
         allowWrite && resolved
@@ -662,8 +679,13 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
               writingPreset: formatWritingPreset(activePreset),
             });
 
-      // Inject worldbuilding context
-      const worldSummary = buildWorldSummary();
+      // Inject worldbuilding context (guarded — store may not be initialized)
+      let worldSummary = "";
+      try {
+        worldSummary = buildWorldSummary();
+      } catch {
+        // Store not ready — proceed without worldbuilding context
+      }
       const finalSystemPrompt = worldSummary
         ? `${systemPrompt}\n\n${worldSummary}`
         : systemPrompt;
@@ -680,18 +702,6 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       const parsed = stripContinueDraftMarker(reply);
       const displayReply = parsed.content;
 
-      const streamPromise = realStreamingRef.current
-        ? Promise.resolve()
-        : (async () => {
-            const chunkSize = displayReply.length > 3000 ? 80 : 40;
-            const intervalMs = displayReply.length > 3000 ? 10 : 16;
-            for (let i = 0; i < displayReply.length; i += chunkSize) {
-              if (streamTokenRef.current !== streamToken) return;
-              setStreamingContent(displayReply.slice(0, i + chunkSize));
-              await delay(intervalMs);
-            }
-          })();
-
       const assistantMeta: MessageMetadata = {};
       if (toolCalls.length) assistantMeta.tool_calls = toolCalls;
 
@@ -704,6 +714,9 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         if (saved) assistantMeta.summary = saved;
       }
 
+      // Save to database first, then run fake streaming animation.
+      // This avoids the race where streaming runs concurrently with addSessionMessage,
+      // which could leave ghost streaming content if the stop button is pressed mid-animation.
       const createdAssistant = await addSessionMessage({
         projectPath,
         sessionId: currentSession.id,
@@ -712,7 +725,16 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         metadata: Object.keys(assistantMeta).length ? assistantMeta : null,
       });
 
-      await streamPromise;
+      // Fake streaming animation (only if real streaming didn't happen)
+      if (!realStreamingRef.current && displayReply.length > 0) {
+        const chunkSize = displayReply.length > 3000 ? 80 : 40;
+        const intervalMs = displayReply.length > 3000 ? 10 : 16;
+        for (let i = 0; i < displayReply.length; i += chunkSize) {
+          if (streamTokenRef.current !== streamToken) break;
+          setStreamingContent(displayReply.slice(0, i + chunkSize));
+          await delay(intervalMs);
+        }
+      }
 
       const uiAssistant = toPanelMessage(createdAssistant);
       setMessagesInSession((prev) => [...prev, uiAssistant]);

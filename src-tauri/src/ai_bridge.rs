@@ -766,9 +766,8 @@ pub fn run_complete(
                 return Err(message.to_string());
             }
             _ => {
-                drop(stdin);
-                let _ = child.wait();
-                return Err(format!("Unknown response type: {line}"));
+                eprintln!("[ai-bridge] Skipping unknown response type in complete loop: {line}");
+                continue;
             }
         }
     }
@@ -1059,15 +1058,24 @@ pub fn run_chat_with_events(
                     "results": results,
                 });
 
-                writeln!(stdin, "{}", tool_result.to_string())
-                    .map_err(|e| format!("Failed to write tool result: {e}"))?;
-                stdin.flush()
-                    .map_err(|e| format!("Failed to flush tool result: {e}"))?;
+                if let Err(e) = writeln!(stdin, "{}", tool_result.to_string()) {
+                    drop(stdin);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Failed to write tool result: {e}"));
+                }
+                if let Err(e) = stdin.flush() {
+                    drop(stdin);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("Failed to flush tool result: {e}"));
+                }
             }
             _ => {
-                drop(stdin);
-                let _ = child.wait();
-                return Err(format!("Unknown response type: {line}"));
+                // Unknown response types are logged and skipped rather than killing
+                // the chat loop — the Node.js engine or bun may emit diagnostic JSON.
+                eprintln!("[ai-bridge] Skipping unknown response type in chat loop: {line}");
+                continue;
             }
         }
     }
