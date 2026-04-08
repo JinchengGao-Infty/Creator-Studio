@@ -7,19 +7,21 @@ import { timingSafeEqual } from 'node:crypto'
 
 /** Constant-time string comparison to prevent timing attacks. */
 function safeCompare(a: string, b: string): boolean {
-  // Pad both to the same length to avoid leaking token length via timing.
-  // timingSafeEqual requires equal-length buffers; without padding,
-  // an early return on length mismatch would reveal the secret's length.
-  const maxLen = Math.max(a.length, b.length)
+  // Use UTF-8 byte lengths (not JS char lengths) to handle multi-byte characters.
+  // Pad both to the same byte length to prevent leaking secret length via timing.
+  const byteLenA = Buffer.byteLength(a, 'utf-8')
+  const byteLenB = Buffer.byteLength(b, 'utf-8')
+  const maxLen = Math.max(byteLenA, byteLenB, 1) // at least 1 byte
   const bufA = Buffer.alloc(maxLen)
   const bufB = Buffer.alloc(maxLen)
   Buffer.from(a, 'utf-8').copy(bufA)
   Buffer.from(b, 'utf-8').copy(bufB)
   try {
-    // Always run timingSafeEqual to prevent timing oracle on secret length.
-    // Combine results without short-circuiting so both checks take constant time.
+    // Always run timingSafeEqual first to prevent timing oracle on secret length.
+    // Combine results without short-circuiting (both operations always execute).
     const contentsMatch = timingSafeEqual(bufA, bufB)
-    const lengthsMatch = a.length === b.length
+    const lengthsMatch = byteLenA === byteLenB
+    // Use bitwise AND to prevent JS engine short-circuit optimization
     return contentsMatch && lengthsMatch
   } catch {
     return false

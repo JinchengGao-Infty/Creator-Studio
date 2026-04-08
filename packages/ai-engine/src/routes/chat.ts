@@ -37,8 +37,8 @@ export function chatRoute(limiter?: ConcurrencyLimiter) {
     const requestId = c.get('requestId') as string
     const body = await c.req.json<ChatRequest>()
 
-    if (!body.provider || !body.parameters || !body.systemPrompt || !body.messages) {
-      return c.json({ error: 'Missing required fields: provider, parameters, systemPrompt, messages' }, 400)
+    if (!body.provider || !body.parameters || !body.systemPrompt || !body.messages || !Array.isArray(body.messages)) {
+      return c.json({ error: 'Missing required fields: provider, parameters, systemPrompt, messages (must be array)' }, 400)
     }
 
     // Validate toolCallbackUrl BEFORE acquiring concurrency slot.

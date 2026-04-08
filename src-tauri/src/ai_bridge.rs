@@ -663,10 +663,15 @@ pub fn run_complete(
     let cancel_flag = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     let timeout = complete_timeout();
 
-    let mut child = spawn_ai_engine(&ai_engine_path)?;
+    let child = spawn_ai_engine(&ai_engine_path)?;
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
+
+    // Take child from guard — the loop below handles all kill/wait paths
+    let mut child = guard.take().unwrap();
 
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let reader_cancel = cancel_flag.clone();
@@ -832,10 +837,16 @@ pub fn run_chat_with_events(
     // 因此在该端点下我们只执行工具并直接返回结果。
     let direct_return_tool_results = provider_base_url.contains("/geminicli/v1");
 
-    let mut child = spawn_ai_engine(&ai_engine_path)?;
+    let child = spawn_ai_engine(&ai_engine_path)?;
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
+
+    // Take child from guard — the loop below handles all kill/wait paths
+    let mut child = guard.take().unwrap();
+
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let reader_cancel = cancel_flag.clone();
     std::thread::spawn(move || {

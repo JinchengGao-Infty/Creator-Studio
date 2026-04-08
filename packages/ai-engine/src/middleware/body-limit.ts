@@ -12,15 +12,20 @@ export function bodyLimitMiddleware(maxBytes: number = DEFAULT_MAX_BODY_BYTES) {
     const contentLength = c.req.header('Content-Length')
     if (contentLength) {
       const size = parseInt(contentLength, 10)
-      if (!isNaN(size) && size > maxBytes) {
+      // Only trust Content-Length if it's a valid pure integer (no trailing chars like "1abc")
+      const isValidNumber = !isNaN(size) && String(size) === contentLength.trim()
+      if (isValidNumber && size > maxBytes) {
         return c.json(
           { error: `Request body too large (${size} bytes, max ${maxBytes} bytes)` },
           413,
         )
       }
-      // Content-Length present and valid → skip expensive arrayBuffer check
-      await next()
-      return
+      if (isValidNumber && size <= maxBytes) {
+        // Valid Content-Length confirms body is under limit → skip expensive arrayBuffer check
+        await next()
+        return
+      }
+      // Malformed Content-Length (e.g. "1abc", "NaN") — fall through to actual body check
     }
 
     // For chunked/headerless requests (no Content-Length), read body and check actual size.
