@@ -16,7 +16,11 @@ function safeCompare(a: string, b: string): boolean {
   Buffer.from(a, 'utf-8').copy(bufA)
   Buffer.from(b, 'utf-8').copy(bufB)
   try {
-    return a.length === b.length && timingSafeEqual(bufA, bufB)
+    // Always run timingSafeEqual to prevent timing oracle on secret length.
+    // Combine results without short-circuiting so both checks take constant time.
+    const contentsMatch = timingSafeEqual(bufA, bufB)
+    const lengthsMatch = a.length === b.length
+    return contentsMatch && lengthsMatch
   } catch {
     return false
   }

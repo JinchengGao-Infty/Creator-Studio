@@ -10,6 +10,30 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// RAII guard that kills and waits the child process on drop.
+/// Prevents zombie processes when functions exit early via `?`.
+struct ChildGuard(Option<std::process::Child>);
+
+impl ChildGuard {
+    fn new(child: std::process::Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// Take the child out of the guard (caller takes ownership, guard becomes no-op).
+    fn take(&mut self) -> Option<std::process::Child> {
+        self.0.take()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 use crate::file_ops::{append, list, read, search, write};
 use crate::project::ChapterIndex;
 use crate::session::{SessionMode, ToolCall, ToolCallStatus};
@@ -305,9 +329,12 @@ pub fn fetch_models(
     let ai_engine_path = get_ai_engine_path()?;
 
     let mut child = spawn_ai_engine(&ai_engine_path)?;
+    // ChildGuard ensures the child is killed+waited on early returns via `?`
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
     let request = json!({
@@ -328,6 +355,9 @@ pub fn fetch_models(
 
     let response: Value = serde_json::from_str(&line)
         .map_err(|e| format!("Failed to parse response: {e}. line={line:?}"))?;
+
+    // Take child out of guard — we'll wait manually below
+    let mut child = guard.take().unwrap();
 
     match response["type"].as_str() {
         Some("models") => {
@@ -358,10 +388,12 @@ pub fn generate_compact_summary(
 ) -> Result<String, String> {
     let ai_engine_path = get_ai_engine_path()?;
 
-    let mut child = spawn_ai_engine(&ai_engine_path)?;
+    let child = spawn_ai_engine(&ai_engine_path)?;
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Runtime injection of API Key into provider config
@@ -418,14 +450,13 @@ pub fn generate_compact_summary(
 
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        let _ = child.wait();
         return Err("Empty response from ai-engine".to_string());
     }
     let response: Value = serde_json::from_str(trimmed)
-        .map_err(|e| {
-            let _ = child.wait();
-            format!("Failed to parse response: {e}. line={trimmed:?}")
-        })?;
+        .map_err(|e| format!("Failed to parse response: {e}. line={trimmed:?}"))?;
+
+    // Take child out of guard — we'll wait manually
+    let mut child = guard.take().unwrap();
 
     match response["type"].as_str() {
         Some("compact_summary") => {
@@ -450,10 +481,12 @@ pub fn run_extract(
     text: String,
 ) -> Result<Value, String> {
     let ai_engine_path = get_ai_engine_path()?;
-    let mut child = spawn_ai_engine(&ai_engine_path)?;
+    let child = spawn_ai_engine(&ai_engine_path)?;
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Runtime API Key injection
@@ -503,13 +536,13 @@ pub fn run_extract(
 
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        let _ = child.wait();
         return Err("Empty response from ai-engine".to_string());
     }
 
     let response: Value = serde_json::from_str(trimmed)
         .map_err(|e| format!("Failed to parse response: {e}. line={trimmed:?}"))?;
 
+    let mut child = guard.take().unwrap();
     let _ = child.wait();
 
     match response["type"].as_str() {
@@ -527,10 +560,12 @@ pub fn run_transform(
     style: Option<String>,
 ) -> Result<String, String> {
     let ai_engine_path = get_ai_engine_path()?;
-    let mut child = spawn_ai_engine(&ai_engine_path)?;
+    let child = spawn_ai_engine(&ai_engine_path)?;
+    let mut guard = ChildGuard::new(child);
+    let child_ref = guard.0.as_mut().unwrap();
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
+    let mut stdin = child_ref.stdin.take().ok_or("Failed to get stdin")?;
+    let stdout = child_ref.stdout.take().ok_or("Failed to get stdout")?;
     let mut reader = BufReader::new(stdout);
 
     // Runtime API Key injection
@@ -584,13 +619,13 @@ pub fn run_transform(
 
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        let _ = child.wait();
         return Err("Empty response from ai-engine".to_string());
     }
 
     let response: Value = serde_json::from_str(trimmed)
         .map_err(|e| format!("Failed to parse response: {e}. line={trimmed:?}"))?;
 
+    let mut child = guard.take().unwrap();
     let _ = child.wait();
 
     match response["type"].as_str() {
@@ -1019,11 +1054,12 @@ pub fn run_chat_with_events(
                     }
                 }
 
-                // Check for consecutive failures
+                // Check for consecutive failures — a tool call failed if
+                // it has a non-empty "error" field (not the "result" field).
                 let all_failed = results.iter().all(|r| {
-                    r.get("result")
+                    r.get("error")
                         .and_then(|v| v.as_str())
-                        .map_or(true, |s| s.starts_with("Error:"))
+                        .map_or(false, |s| !s.is_empty())
                 });
                 if all_failed {
                     consecutive_tool_errors += 1;

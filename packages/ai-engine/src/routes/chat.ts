@@ -41,15 +41,8 @@ export function chatRoute(limiter?: ConcurrencyLimiter) {
       return c.json({ error: 'Missing required fields: provider, parameters, systemPrompt, messages' }, 400)
     }
 
-    // Concurrency check before starting stream
-    if (limiter && !limiter.tryAcquire()) {
-      return c.json({
-        error: 'Too many concurrent requests. Please wait for current requests to complete.',
-        retry_after_seconds: 2,
-      }, 429)
-    }
-
-    // Validate toolCallbackUrl is localhost only (prevent SSRF)
+    // Validate toolCallbackUrl BEFORE acquiring concurrency slot.
+    // Early returns after tryAcquire() would leak the slot (no finally{} to release).
     if (body.toolCallbackUrl) {
       try {
         const cbUrl = new URL(body.toolCallbackUrl)
@@ -59,6 +52,14 @@ export function chatRoute(limiter?: ConcurrencyLimiter) {
       } catch {
         return c.json({ error: 'Invalid toolCallbackUrl' }, 400)
       }
+    }
+
+    // Concurrency check — all validation must be done before this point
+    if (limiter && !limiter.tryAcquire()) {
+      return c.json({
+        error: 'Too many concurrent requests. Please wait for current requests to complete.',
+        retry_after_seconds: 2,
+      }, 429)
     }
 
     const executeTools = body.toolCallbackUrl
