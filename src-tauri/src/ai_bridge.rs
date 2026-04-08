@@ -402,7 +402,8 @@ pub fn generate_compact_summary(
     if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
         if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
             let provider_type = provider_with_auth
-                .get("provider_type")
+                .get("providerType")
+                .or_else(|| provider_with_auth.get("provider_type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("openai-compatible");
 
@@ -495,7 +496,8 @@ pub fn run_extract(
     if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
         if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
             let provider_type = provider_with_auth
-                .get("provider_type")
+                .get("providerType")
+                .or_else(|| provider_with_auth.get("provider_type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("openai-compatible");
             match provider_type {
@@ -574,7 +576,8 @@ pub fn run_transform(
     if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
         if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
             let provider_type = provider_with_auth
-                .get("provider_type")
+                .get("providerType")
+                .or_else(|| provider_with_auth.get("provider_type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("openai-compatible");
             match provider_type {
@@ -706,7 +709,8 @@ pub fn run_complete(
     if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
         if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
             let provider_type = provider_with_auth
-                .get("provider_type")
+                .get("providerType")
+                .or_else(|| provider_with_auth.get("provider_type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("openai-compatible");
 
@@ -883,7 +887,8 @@ pub fn run_chat_with_events(
     if let Some(provider_id) = provider_with_auth.get("id").and_then(|v| v.as_str()) {
         if let Ok(Some(api_key)) = keyring_store::get_api_key(provider_id) {
             let provider_type = provider_with_auth
-                .get("provider_type")
+                .get("providerType")
+                .or_else(|| provider_with_auth.get("provider_type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("openai-compatible");
 

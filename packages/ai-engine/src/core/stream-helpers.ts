@@ -41,8 +41,9 @@ export function structLog(
 
 /** Sanitize error messages: strip file paths, stack traces, truncate. */
 export function sanitizeError(message: string): string {
-  let clean = message.replace(/\/[^\s:]+\.[jt]s:\d+/g, '[internal]')
-  clean = clean.replace(/[A-Z]:\\[^\s:]+\.[jt]s:\d+/g, '[internal]')
+  // Match path:line and path:line:column formats (Unix and Windows)
+  let clean = message.replace(/\/[^\s:]+\.[jt]s:\d+(:\d+)?/g, '[internal]')
+  clean = clean.replace(/[A-Z]:\\[^\s:]+\.[jt]s:\d+(:\d+)?/g, '[internal]')
   clean = clean.replace(/\n\s+at\s.+/g, '')
   if (clean.length > 500) {
     clean = clean.slice(0, 500) + '...'

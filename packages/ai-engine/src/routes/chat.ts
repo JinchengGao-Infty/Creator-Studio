@@ -46,6 +46,9 @@ export function chatRoute(limiter?: ConcurrencyLimiter) {
     if (body.toolCallbackUrl) {
       try {
         const cbUrl = new URL(body.toolCallbackUrl)
+        if (cbUrl.protocol !== 'http:' && cbUrl.protocol !== 'https:') {
+          return c.json({ error: 'toolCallbackUrl must use http or https' }, 400)
+        }
         if (cbUrl.hostname !== 'localhost' && cbUrl.hostname !== '127.0.0.1') {
           return c.json({ error: 'toolCallbackUrl must be localhost or 127.0.0.1' }, 400)
         }
