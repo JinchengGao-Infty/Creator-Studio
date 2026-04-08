@@ -399,6 +399,26 @@ describe('POST /api/chat', () => {
     expect(res.headers.get('content-type')).toContain('text/event-stream')
   })
 
+  it('invalid toolCallbackUrl does not leak concurrency slot', async () => {
+    // Regression test: invalid toolCallbackUrl should be validated BEFORE
+    // acquiring a concurrency slot. Otherwise, repeated invalid URLs can
+    // exhaust the concurrency limiter (3 slots) permanently.
+    const app = makeApp()
+    // Send 5 requests with invalid toolCallbackUrl — if slots leak,
+    // the 4th request would get 429 instead of 400.
+    for (let i = 0; i < 5; i++) {
+      const res = await postJSON(app, '/api/chat', {
+        provider: FAKE_PROVIDER,
+        parameters: VALID_PARAMS,
+        systemPrompt: 'test',
+        messages: [{ role: 'user', content: 'hi' }],
+        toolCallbackUrl: 'http://evil.com/callback',
+      })
+      expect(res.status).toBe(400) // Should always be 400, never 429
+      await res.text() // consume body
+    }
+  })
+
   it('SSE error event has sanitized message (no file paths)', async () => {
     const app = makeApp()
     const res = await postJSON(app, '/api/chat', {
