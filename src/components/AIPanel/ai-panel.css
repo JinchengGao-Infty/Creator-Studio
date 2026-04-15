@@ -33,6 +33,96 @@
   border-bottom: 1px solid var(--border);
 }
 
+.ai-panel-diagnostics {
+  padding: 8px 12px 0;
+}
+
+.context-diagnostics-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.context-diagnostics-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.context-diagnostics-subtitle {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.context-diagnostics-summary {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-diagnostics-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.context-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.context-diagnostics-metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.context-diagnostics-label {
+  color: var(--text-secondary);
+}
+
+.context-diagnostics-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.context-diagnostics-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+
+.context-diagnostics-preview pre {
+  margin: 6px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+}
+
 .chat-history {
   flex: 1;
   overflow: auto;

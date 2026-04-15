@@ -7,6 +7,29 @@ export type ContinuePhase = "draft" | "apply";
 
 export const CONTINUE_DRAFT_MARKER = "<<<CONTINUE_DRAFT>>>";
 
+export interface ContextSourceStat {
+  key: string;
+  label: string;
+  included: boolean;
+  chars: number;
+  details?: string;
+}
+
+export interface WritingContextDiagnostics {
+  modeLabel: string;
+  chapterLabel: string;
+  totalWorkingMessages: number;
+  includedMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  compactSummaryMessages: number;
+  filteredSystemMessages: number;
+  messageChars: number;
+  finalSystemPromptChars: number;
+  finalSystemPromptPreview: string;
+  sources: ContextSourceStat[];
+}
+
 function chapterFilePath(chapterId: string) {
   return `chapters/${chapterId}.txt`;
 }
@@ -22,17 +45,55 @@ export function stripContinueDraftMarker(reply: string): { isDraft: boolean; con
   return { isDraft: true, content: after.replace(/^\s+/, "") };
 }
 
-export function buildMessagesForAi(workingMessages: PanelMessage[]): ChatMessage[] {
-  return workingMessages
+export function buildMessagesForAi(workingMessages: PanelMessage[]): {
+  messagesForAi: ChatMessage[];
+  compactSummaryMessages: number;
+  filteredSystemMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  messageChars: number;
+} {
+  let compactSummaryMessages = 0;
+  let filteredSystemMessages = 0;
+  let userMessages = 0;
+  let assistantMessages = 0;
+  let messageChars = 0;
+
+  const messagesForAi = workingMessages
     .filter((m) => {
-      if (m.role === "user" || m.role === "assistant") return true;
-      if (m.role === "system" && m.content.startsWith("[系统摘要]")) return true;
+      if (m.role === "user") {
+        userMessages += 1;
+        messageChars += m.content.length;
+        return true;
+      }
+      if (m.role === "assistant") {
+        assistantMessages += 1;
+        messageChars += m.content.length;
+        return true;
+      }
+      if (m.role === "system" && m.content.startsWith("[系统摘要]")) {
+        compactSummaryMessages += 1;
+        messageChars += m.content.length;
+        return true;
+      }
+      if (m.role === "system") {
+        filteredSystemMessages += 1;
+      }
       return false;
     })
     .map((m) => ({
       role: m.role as ChatMessage["role"],
       content: m.content,
     }));
+
+  return {
+    messagesForAi,
+    compactSummaryMessages,
+    filteredSystemMessages,
+    userMessages,
+    assistantMessages,
+    messageChars,
+  };
 }
 
 function buildContinueSystemPrompt(params: {
@@ -167,8 +228,19 @@ export function buildWritingContextBundle(params: {
   messagesForAi: ChatMessage[];
   finalSystemPrompt: string;
   presetPrompt: string;
+  diagnostics: WritingContextDiagnostics;
 } {
   const presetPrompt = formatWritingPreset(params.preset);
+  const modeLabel = params.allowWrite
+    ? "续写应用"
+    : params.continuePhase === "draft"
+      ? "续写草稿 / 讨论"
+      : "讨论";
+  const chapterLabel = params.chapterId
+    ? params.chapterTitle
+      ? `${params.chapterTitle}（${params.chapterId}）`
+      : params.chapterId
+    : "未选择章节";
   const systemPrompt =
     params.allowWrite && params.chapterId
       ? buildContinueSystemPrompt({
@@ -188,10 +260,58 @@ export function buildWritingContextBundle(params: {
   const finalSystemPrompt = params.worldSummary?.trim()
     ? `${systemPrompt}\n\n${params.worldSummary.trim()}`
     : systemPrompt;
+  const messageStats = buildMessagesForAi(params.workingMessages);
+  const sources: ContextSourceStat[] = [
+    {
+      key: "preset",
+      label: "写作预设",
+      included: !!presetPrompt.trim(),
+      chars: presetPrompt.length,
+      details: params.preset.name,
+    },
+    {
+      key: "world",
+      label: "世界观摘要",
+      included: !!params.worldSummary?.trim(),
+      chars: params.worldSummary?.trim().length ?? 0,
+      details: params.worldSummary?.trim() ? "来自 worldbuilding store" : "未注入",
+    },
+    {
+      key: "session",
+      label: "会话消息",
+      included: messageStats.messagesForAi.length > 0,
+      chars: messageStats.messageChars,
+      details: `${messageStats.messagesForAi.length} 条送入模型`,
+    },
+    {
+      key: "compact",
+      label: "压缩摘要",
+      included: messageStats.compactSummaryMessages > 0,
+      chars: 0,
+      details:
+        messageStats.compactSummaryMessages > 0
+          ? `${messageStats.compactSummaryMessages} 条 [系统摘要]`
+          : "未使用",
+    },
+  ];
 
   return {
-    messagesForAi: buildMessagesForAi(params.workingMessages),
+    messagesForAi: messageStats.messagesForAi,
     finalSystemPrompt,
     presetPrompt,
+    diagnostics: {
+      modeLabel,
+      chapterLabel,
+      totalWorkingMessages: params.workingMessages.length,
+      includedMessages: messageStats.messagesForAi.length,
+      userMessages: messageStats.userMessages,
+      assistantMessages: messageStats.assistantMessages,
+      compactSummaryMessages: messageStats.compactSummaryMessages,
+      filteredSystemMessages: messageStats.filteredSystemMessages,
+      messageChars: messageStats.messageChars,
+      finalSystemPromptChars: finalSystemPrompt.length,
+      finalSystemPromptPreview: finalSystemPrompt.slice(0, 400),
+      sources,
+    },
   };
 }

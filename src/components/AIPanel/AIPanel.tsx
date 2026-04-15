@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import ChatInput from "./ChatInput";
 import ChatHistory from "./ChatHistory";
 import SessionList from "./SessionList";
+import ContextDiagnosticsPanel from "./ContextDiagnosticsPanel";
 import { aiChat } from "../../lib/ai";
 import { getWritingPresets, saveWritingPresets } from "../../lib/writingPresets";
 import { createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
@@ -14,6 +15,7 @@ import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
   buildWritingContextBundle,
   stripContinueDraftMarker,
+  type WritingContextDiagnostics,
   type ContinuePhase,
 } from "./contextBuilder";
 import {
@@ -117,6 +119,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
   const [pendingToolCalls, setPendingToolCalls] = useState<ToolCall[]>([]);
   const [streamingContent, setStreamingContent] = useState("");
   const [dismissedDraftIds, setDismissedDraftIds] = useState<string[]>([]);
+  const [lastContextDiagnostics, setLastContextDiagnostics] = useState<WritingContextDiagnostics | null>(null);
   const streamTokenRef = useRef(0);
   const toolCallStartTimesRef = useRef<Map<string, number>>(new Map());
   const realStreamingRef = useRef(false);
@@ -320,6 +323,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     if (!currentSessionId) {
       setMessagesInSession([]);
       setDismissedDraftIds([]);
+      setLastContextDiagnostics(null);
       return;
     }
 
@@ -328,6 +332,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       setLoadingMessages(true);
       setMessagesInSession([]);
       setDismissedDraftIds([]);
+      setLastContextDiagnostics(null);
       try {
         const msgs = await getSessionMessages({ projectPath, sessionId: currentSessionId });
         if (cancelled) return;
@@ -523,7 +528,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       } catch {
         // Store not ready — proceed without worldbuilding context
       }
-      const { messagesForAi, finalSystemPrompt } = buildWritingContextBundle({
+      const { messagesForAi, finalSystemPrompt, diagnostics } = buildWritingContextBundle({
         projectPath,
         workingMessages,
         preset: activePreset,
@@ -533,6 +538,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         chapterTitle: resolved?.chapterTitle ?? null,
         worldSummary,
       });
+      setLastContextDiagnostics(diagnostics);
 
       const { content: reply, toolCalls } = await aiChat({
         projectDir: projectPath,
@@ -792,6 +798,10 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
           />
         </div>
       ) : null}
+
+      <div className="ai-panel-diagnostics">
+        <ContextDiagnosticsPanel diagnostics={lastContextDiagnostics} />
+      </div>
 
       <ChatHistory
         messages={messagesInSession}
