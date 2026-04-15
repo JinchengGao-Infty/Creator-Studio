@@ -78,7 +78,10 @@ fn post_json(daemon: &AIDaemon, path: &str, body: &Value) -> Result<Value, Strin
         return Err(err["error"].as_str().unwrap_or(&text).to_string());
     }
 
-    serde_json::from_str(&text).map_err(|e| format!("Invalid JSON response: {e}"))
+    serde_json::from_str(&text).map_err(|e| {
+        let preview: String = text.chars().take(200).collect();
+        format!("Invalid JSON response: {e}. Body: {preview}")
+    })
 }
 
 // ─── Public API ───

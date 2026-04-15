@@ -5,7 +5,7 @@
  * 解决配置体验糟糕的问题
  */
 
-import { useEffect, useState, type ReactNode, type ReactElement } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type ReactElement } from "react";
 import {
   Button,
   Card,
@@ -73,6 +73,8 @@ export function AIConfigPanel(): ReactElement {
     api_key?: string;
     provider_type: string;
   }>();
+  const [modelForm] = Form.useForm<ModelParameters>();
+  const autoRefreshAttemptedRef = useRef<Set<string>>(new Set());
 
   // 加载配置
   useEffect(() => {
@@ -91,6 +93,39 @@ export function AIConfigPanel(): ReactElement {
   // 获取当前激活的 Provider
   const activeProvider = providers.find((p) => p.id === activeProviderId) ?? null;
   const hasValidConfig = !!activeProviderId && !!defaultParameters.model;
+  const providerCountLabel = useMemo(() => {
+    if (providers.length === 0) return "未配置";
+    if (providers.length === 1) return "1 个配置";
+    return `${providers.length} 个配置`;
+  }, [providers.length]);
+
+  useEffect(() => {
+    const providerModels = activeProvider?.models ?? [];
+    const currentModel = defaultParameters.model?.trim() ?? "";
+    const resolvedModel =
+      providerModels.length > 0 && (!currentModel || !providerModels.includes(currentModel))
+        ? providerModels[0]
+        : currentModel;
+
+    modelForm.setFieldsValue({
+      model: resolvedModel || undefined,
+      temperature: defaultParameters.temperature,
+      top_p: defaultParameters.top_p,
+      top_k: defaultParameters.top_k,
+      max_tokens: defaultParameters.max_tokens,
+    });
+  }, [activeProvider, defaultParameters, modelForm]);
+
+  useEffect(() => {
+    if (!activeProvider || activeProvider.models.length > 0 || refreshingModels[activeProvider.id]) {
+      return;
+    }
+    if (autoRefreshAttemptedRef.current.has(activeProvider.id)) {
+      return;
+    }
+    autoRefreshAttemptedRef.current.add(activeProvider.id);
+    void refreshModels(activeProvider.id).catch(() => undefined);
+  }, [activeProvider, refreshingModels, refreshModels]);
 
   // 处理添加/编辑 Provider
   const handleSubmit = async (values: {
@@ -217,7 +252,7 @@ export function AIConfigPanel(): ReactElement {
 
       {/* Provider 列表 */}
       <Card
-        title="服务商"
+        title={`服务商 · ${providerCountLabel}`}
         extra={
           <Button
             type="primary"
@@ -347,8 +382,8 @@ export function AIConfigPanel(): ReactElement {
       {/* 模型参数配置 */}
       <Card title="模型参数" style={{ marginTop: 16 }}>
         <Form
+          form={modelForm}
           layout="vertical"
-          initialValues={defaultParameters}
           onFinish={handleModelSave}
         >
           {/* 模型选择 */}
@@ -365,9 +400,27 @@ export function AIConfigPanel(): ReactElement {
                 options={activeProvider.models.map((m: string) => ({ value: m, label: m }))}
               />
             ) : (
-              <Input placeholder="手动输入模型名称，如 gpt-4o-mini" />
+              <Input placeholder="手动输入模型名称，如 gpt-5.4" />
             )}
           </Form.Item>
+
+          {activeProvider ? (
+            <Alert
+              type={activeProvider.models.length > 0 ? "info" : "warning"}
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={
+                activeProvider.models.length > 0
+                  ? `当前 Provider 已发现 ${activeProvider.models.length} 个模型`
+                  : "当前 Provider 还没有拉到模型列表"
+              }
+              description={
+                activeProvider.models.length > 0
+                  ? "如果网关不提供 /models，也可以直接手动输入模型名。"
+                  : "可以在上面的 Provider 列表里点“刷新模型”。如果网关不支持 /models，直接手动输入模型名即可。"
+              }
+            />
+          ) : null}
 
           {/* Temperature */}
           <Form.Item

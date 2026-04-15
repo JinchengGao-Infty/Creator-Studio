@@ -122,17 +122,24 @@ fn find_ai_engine_in_dir(dir: &Path) -> Option<PathBuf> {
     }
 
     // Tauri may rename external binaries with a target triple suffix; best-effort scan.
+    // Prefer .js entrypoints over fake shell-launch attempts of plain text files in MacOS/.
     let entries = fs::read_dir(dir).ok()?;
+    let mut js_candidate: Option<PathBuf> = None;
+    let mut fallback_candidate: Option<PathBuf> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
         if name.starts_with("ai-engine") && path.is_file() {
-            return Some(path);
+            if name.ends_with(".js") {
+                js_candidate = Some(path);
+                continue;
+            }
+            fallback_candidate.get_or_insert(path);
         }
     }
-    None
+    js_candidate.or(fallback_candidate)
 }
 
 fn find_bundled_ai_engine() -> Option<PathBuf> {
@@ -143,10 +150,10 @@ fn find_bundled_ai_engine() -> Option<PathBuf> {
     // macOS: <app>.app/Contents/Resources/ai-engine.js
     // 搜索顺序从最可能的位置开始
     let candidates = [
-        exe_dir.join("bin"),              // MSI resources: bin/ai-engine.js
-        exe_dir.clone(),                   // NSIS/直接复制: ai-engine.js
-        exe_dir.join("../Resources"),      // macOS: Contents/Resources/
-        exe_dir.join("../Resources/bin"),   // macOS: Contents/Resources/bin/
+        exe_dir.join("../Resources/bin"),  // macOS resources: prefer real JS entrypoint first
+        exe_dir.join("../Resources"),      // macOS resources root
+        exe_dir.join("bin"),               // MSI resources: bin/ai-engine.js
+        exe_dir.clone(),                   // NSIS/legacy direct copy
     ];
 
     // Startup diagnostic: print all candidate paths and their status
@@ -252,15 +259,65 @@ fn is_script_path(path: &Path) -> bool {
     matches!(path.extension().and_then(|s| s.to_str()), Some("ts" | "js"))
 }
 
+fn runtime_candidates(runtime: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            candidates.push(dir.join(runtime));
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        if runtime == "bun" {
+            candidates.push(home.join(".bun/bin/bun"));
+        }
+    }
+
+    match runtime {
+        "node" => {
+            candidates.push(PathBuf::from("/opt/homebrew/bin/node"));
+            candidates.push(PathBuf::from("/usr/local/bin/node"));
+            candidates.push(PathBuf::from("/usr/bin/node"));
+        }
+        "bun" => {
+            candidates.push(PathBuf::from("/opt/homebrew/bin/bun"));
+            candidates.push(PathBuf::from("/usr/local/bin/bun"));
+        }
+        _ => {}
+    }
+
+    candidates
+}
+
+fn resolve_runtime_path(runtime: &str) -> Option<PathBuf> {
+    runtime_candidates(runtime)
+        .into_iter()
+        .find(|candidate| candidate.exists() && candidate.is_file())
+}
+
 fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
     let mut cmd = if is_script_path(path) {
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or_default();
         let mut c = if extension == "js" {
-            let mut node = Command::new("node");
+            let node_path = resolve_runtime_path("node").ok_or_else(|| {
+                format!(
+                    "Failed to spawn ai-engine: `node` runtime not found for '{}'. Install Node.js or ensure it is available in PATH.",
+                    path.display()
+                )
+            })?;
+            let mut node = Command::new(node_path);
             node.arg(path);
             node
         } else {
-            let mut bun = Command::new("bun");
+            let bun_path = resolve_runtime_path("bun").ok_or_else(|| {
+                format!(
+                    "Failed to spawn ai-engine: `bun` runtime not found for '{}'. Install bun or build the bundled sidecar via `npm run ai-engine:build`.",
+                    path.display()
+                )
+            })?;
+            let mut bun = Command::new(bun_path);
             bun.arg("run").arg(path);
             bun
         };
@@ -305,6 +362,34 @@ fn spawn_ai_engine(path: &Path) -> Result<std::process::Child, String> {
         })
 }
 
+fn format_pipe_error_from_guard(
+    guard: &mut ChildGuard,
+    action: &str,
+    err: &std::io::Error,
+) -> String {
+    let exit_detail = if let Some(mut child) = guard.take() {
+        match child.wait() {
+            Ok(status) => format!(" ai-engine exited early with status {status}."),
+            Err(wait_err) => format!(" ai-engine may have exited early (wait failed: {wait_err})."),
+        }
+    } else {
+        String::new()
+    };
+    format!("Failed to {action}: {err}.{exit_detail}")
+}
+
+fn format_pipe_error_from_child(
+    child: &mut std::process::Child,
+    action: &str,
+    err: &std::io::Error,
+) -> String {
+    let exit_detail = match child.wait() {
+        Ok(status) => format!(" ai-engine exited early with status {status}."),
+        Err(wait_err) => format!(" ai-engine may have exited early (wait failed: {wait_err})."),
+    };
+    format!("Failed to {action}: {err}.{exit_detail}")
+}
+
 fn format_tool_runs(runs: &[ToolCall]) -> String {
     let mut out = String::new();
     for run in runs {
@@ -344,8 +429,9 @@ pub fn fetch_models(
         "apiKey": api_key,
     });
 
-    writeln!(stdin, "{}", request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
     drop(stdin);
 
     let mut line = String::new();
@@ -438,11 +524,12 @@ pub fn generate_compact_summary(
         "messages": messages,
     });
 
-    writeln!(stdin, "{}", request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-    stdin
-        .flush()
-        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
+    if let Err(e) = stdin.flush() {
+        return Err(format_pipe_error_from_guard(&mut guard, "flush stdin", &e));
+    }
     drop(stdin);
 
     let mut line = String::new();
@@ -529,8 +616,9 @@ pub fn run_extract(
         "text": text,
     });
 
-    writeln!(stdin, "{}", request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
     drop(stdin);
 
     let mut line = String::new();
@@ -613,8 +701,9 @@ pub fn run_transform(
         request["style"] = json!(s);
     }
 
-    writeln!(stdin, "{}", request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
     drop(stdin);
 
     let mut line = String::new();
@@ -747,10 +836,12 @@ pub fn run_complete(
     });
 
     // These `?` returns are protected by ChildGuard (kills+waits child on drop)
-    writeln!(stdin, "{}", init_request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-    stdin.flush()
-        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", init_request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
+    if let Err(e) = stdin.flush() {
+        return Err(format_pipe_error_from_guard(&mut guard, "flush stdin", &e));
+    }
 
     // Take child from guard AFTER all fallible init — loop handles its own kill/wait
     let mut child = guard.take().unwrap();
@@ -926,10 +1017,12 @@ pub fn run_chat_with_events(
     });
 
     // These `?` returns are protected by ChildGuard (kills+waits child on drop)
-    writeln!(stdin, "{}", init_request.to_string())
-        .map_err(|e| format!("Failed to write to stdin: {e}"))?;
-    stdin.flush()
-        .map_err(|e| format!("Failed to flush stdin: {e}"))?;
+    if let Err(e) = writeln!(stdin, "{}", init_request.to_string()) {
+        return Err(format_pipe_error_from_guard(&mut guard, "write to stdin", &e));
+    }
+    if let Err(e) = stdin.flush() {
+        return Err(format_pipe_error_from_guard(&mut guard, "flush stdin", &e));
+    }
 
     // Take child from guard AFTER all fallible init — loop handles its own kill/wait
     let mut child = guard.take().unwrap();
@@ -1128,15 +1221,11 @@ pub fn run_chat_with_events(
 
                 if let Err(e) = writeln!(stdin, "{}", tool_result.to_string()) {
                     drop(stdin);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("Failed to write tool result: {e}"));
+                    return Err(format_pipe_error_from_child(&mut child, "write tool result", &e));
                 }
                 if let Err(e) = stdin.flush() {
                     drop(stdin);
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("Failed to flush tool result: {e}"));
+                    return Err(format_pipe_error_from_child(&mut child, "flush tool result", &e));
                 }
             }
             _ => {
@@ -1472,17 +1561,27 @@ function scenarioFromMessages(messages) {
   if (last.includes("__SCENARIO_READ_MISSING__")) return "read_missing";
   if (last.includes("__SCENARIO_DISCUSSION_APPEND__")) return "discussion_append";
   if (last.includes("__SCENARIO_CONTINUE_APPEND__")) return "continue_append";
+  if (last.includes("__SCENARIO_TOOL_EXIT_AFTER_CALL__")) return "tool_exit_after_call";
+  if (last.includes("__SCENARIO_COMPLETE_EXIT__")) return "complete_exit";
   return "";
 }
 
 async function main() {
   const input = await readJsonFromStdin();
+  const scenario = scenarioFromMessages(input?.messages);
+
+  if (input?.type === "complete") {
+    if (scenario === "complete_exit") {
+      process.exit(42);
+    }
+    writeJson({ type: "done", content: "noop complete" });
+    return;
+  }
+
   if (input?.type !== "chat") {
     writeJson({ type: "error", message: "Unknown request type" });
     process.exit(1);
   }
-
-  const scenario = scenarioFromMessages(input.messages);
 
   if (scenario === "discussion_read") {
     writeJson({
@@ -1555,6 +1654,16 @@ async function main() {
     const err = toolResult?.results?.[0]?.error ?? "";
     writeJson({ type: "done", content: err ? `append 失败：${err}` : "append 完成" });
     return;
+  }
+
+  if (scenario === "tool_exit_after_call") {
+    writeJson({
+      type: "tool_call",
+      calls: [
+        { id: "call_read_1", name: "read", args: { path: "chapters/chapter_001.txt", offset: 0, limit: 20 } },
+      ],
+    });
+    process.exit(17);
   }
 
   writeJson({ type: "done", content: "noop" });
@@ -1814,5 +1923,55 @@ main().catch((err) => {
             .find_map(|dir| find_ai_engine_in_dir(dir))
             .expect("should find installed sidecar");
         assert_eq!(found, bin_js);
+    }
+
+    #[test]
+    fn run_complete_reports_early_engine_exit() {
+        ensure_mock_ai_engine_cli();
+
+        let err = run_complete(
+            json!({
+              "id": "mock",
+              "name": "Mock Provider",
+              "baseURL": "http://mock/v1",
+              "apiKey": "test",
+              "providerType": "openai-compatible",
+            }),
+            json!({
+              "model": "test-model",
+              "temperature": 0,
+              "topP": 1,
+              "maxTokens": 32,
+            }),
+            "test".to_string(),
+            vec![json!({ "role": "user", "content": "__SCENARIO_COMPLETE_EXIT__" })],
+            None,
+        )
+        .expect_err("run_complete should fail when ai-engine exits immediately");
+
+        assert!(
+            err.contains("ai-engine exited") || err.contains("Failed to write to stdin"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn chat_reports_engine_exit_after_tool_call() {
+        ensure_mock_ai_engine_cli();
+
+        let temp = TempDir::new("creatorai-v2-ai-bridge-tool-call-exit");
+        fs::create_dir_all(temp.path.join("chapters")).unwrap();
+        fs::write(temp.path.join("chapters/chapter_001.txt"), "hello\n").unwrap();
+
+        let mut request =
+            base_chat_request(temp.path.to_string_lossy().to_string(), "__SCENARIO_TOOL_EXIT_AFTER_CALL__");
+        request.mode = SessionMode::Discussion;
+
+        let err =
+            run_chat(request).expect_err("run_chat should fail when ai-engine exits after tool_call");
+        assert!(
+            err.contains("write tool result") || err.contains("ai-engine exited unexpectedly"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -28,10 +28,13 @@ if (!target) {
 
 const exeSuffix = target.includes("windows") ? ".exe" : "";
 const outPath = path.join("src-tauri", "bin", `ai-engine-${target}${exeSuffix}`);
-const scriptOutPath = path.join("src-tauri", "bin", "ai-engine.js");
-const localReleaseScriptOutPath = path.join("src-tauri", "target", "release", "ai-engine.js");
+const cliScriptOutPath = path.join("src-tauri", "bin", "ai-engine.js");
+const daemonScriptOutPath = path.join("src-tauri", "bin", "ai-engine-daemon.js");
+const localReleaseCliOutPath = path.join("src-tauri", "target", "release", "ai-engine.js");
+const localReleaseDaemonOutPath = path.join("src-tauri", "target", "release", "ai-engine-daemon.js");
 const aiEngineDir = path.join("packages", "ai-engine");
 const builtCliPath = path.join(aiEngineDir, "dist", "cli.js");
+const builtDaemonPath = path.join(aiEngineDir, "dist", "server.js");
 
 mkdirSync(path.dirname(outPath), { recursive: true });
 mkdirSync(path.join(aiEngineDir, "dist"), { recursive: true });
@@ -43,28 +46,37 @@ const esbuildModulePath = pathToFileURL(
 ).href;
 const { build } = await import(esbuildModulePath);
 
-console.log("[ai-engine] bundle cli with esbuild");
-await build({
-  entryPoints: [path.resolve(aiEngineDir, "src", "cli.ts")],
-  outfile: path.resolve(builtCliPath),
-  bundle: true,
-  platform: "node",
-  format: "esm",
-  target: "node18",
-  minify: true,
-  sourcemap: false,
-  legalComments: "none",
-  packages: "bundle",
-});
+async function bundleNodeEntry(entryFile, outFile) {
+  console.log(`[ai-engine] bundle ${path.basename(entryFile)} with esbuild`);
+  await build({
+    entryPoints: [path.resolve(aiEngineDir, "src", entryFile)],
+    outfile: path.resolve(outFile),
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node18",
+    minify: true,
+    sourcemap: false,
+    legalComments: "none",
+    packages: "bundle",
+  });
 
-const normalizedCli = readFileSync(builtCliPath, "utf8").replace(/^#!.*\r?\n/, "");
-writeFileSync(builtCliPath, normalizedCli);
+  const normalized = readFileSync(outFile, "utf8").replace(/^#!.*\r?\n/, "");
+  writeFileSync(outFile, normalized);
+}
+
+await bundleNodeEntry("cli.ts", builtCliPath);
+await bundleNodeEntry("server.ts", builtDaemonPath);
 
 console.log(`[ai-engine] copy ${builtCliPath} -> ${outPath}`);
 copyFileSync(builtCliPath, outPath);
-console.log(`[ai-engine] copy ${builtCliPath} -> ${scriptOutPath}`);
-copyFileSync(builtCliPath, scriptOutPath);
+console.log(`[ai-engine] copy ${builtCliPath} -> ${cliScriptOutPath}`);
+copyFileSync(builtCliPath, cliScriptOutPath);
+console.log(`[ai-engine] copy ${builtDaemonPath} -> ${daemonScriptOutPath}`);
+copyFileSync(builtDaemonPath, daemonScriptOutPath);
 if (existsSync(path.join("src-tauri", "target", "release"))) {
-  console.log(`[ai-engine] copy ${builtCliPath} -> ${localReleaseScriptOutPath}`);
-  copyFileSync(builtCliPath, localReleaseScriptOutPath);
+  console.log(`[ai-engine] copy ${builtCliPath} -> ${localReleaseCliOutPath}`);
+  copyFileSync(builtCliPath, localReleaseCliOutPath);
+  console.log(`[ai-engine] copy ${builtDaemonPath} -> ${localReleaseDaemonOutPath}`);
+  copyFileSync(builtDaemonPath, localReleaseDaemonOutPath);
 }

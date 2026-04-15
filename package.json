@@ -17,6 +17,7 @@
     "test:ai-engine-spawn": "node test-suite/run.mjs ai-engine-spawn",
     "test:ai-engine-tool-safety": "node test-suite/run.mjs ai-engine-tool-safety",
     "test:ai-engine-error-recovery": "node test-suite/run.mjs ai-engine-error-recovery",
+    "test:release-copy": "node test-suite/run.mjs release-copy",
     "tauri": "tauri",
     "ai-engine:build": "node scripts/build-ai-engine.mjs",
     "tauri:dev": "npm run ai-engine:build && tauri dev",

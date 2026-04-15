@@ -15,6 +15,13 @@ function buildAuthHeaders(providerType: ProviderConfig['providerType'], apiKey: 
   }
 }
 
+function normalizeBaseURL(provider: ProviderConfig): string {
+  const trimmed = (provider.baseURL ?? '').trim().replace(/\/+$/, '')
+  if (provider.providerType !== 'openai-compatible') return trimmed
+  if (!trimmed || trimmed.endsWith('/v1')) return trimmed
+  return `${trimmed}/v1`
+}
+
 export class ProviderManager {
   private providers: Map<string, ProviderConfig> = new Map()
 
@@ -44,9 +51,10 @@ export class ProviderManager {
     // but some providers expect different auth headers.
     const authHeaders = buildAuthHeaders(provider.providerType, provider.apiKey)
     const mergedHeaders = { ...authHeaders, ...(provider.headers ?? {}) }
+    const baseURL = normalizeBaseURL(provider)
 
     return createOpenAICompatible({
-      baseURL: provider.baseURL,
+      baseURL,
       name: provider.name,
       // For Google/Anthropic, omit apiKey to avoid sending `Authorization: Bearer ...`
       // (some gateways treat Bearer tokens differently and may require browser verification).

@@ -84,6 +84,14 @@ describe('ProviderManager.createSDK', () => {
     expect(typeof sdk).toBe('function')
   })
 
+  it('normalizes openai-compatible baseURL to /v1 when omitted', () => {
+    const pm = new ProviderManager()
+    pm.addProvider(makeProvider({ baseURL: 'https://example.com/openai' }))
+    const sdk = pm.createSDK('test-provider')
+    const model = sdk('gpt-4')
+    expect(model).toBeDefined()
+  })
+
   it('returns a callable function for google provider', () => {
     const pm = new ProviderManager()
     pm.addProvider(makeProvider({ id: 'google-p', providerType: 'google' }))

@@ -41,6 +41,13 @@ export interface AIConfigState {
   clearError: () => void;
 }
 
+function normalizeProviderBaseUrl(baseUrl: string, providerType: string): string {
+  const trimmed = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  if (providerType !== "openai-compatible") return trimmed;
+  if (!trimmed || trimmed.endsWith("/v1")) return trimmed;
+  return `${trimmed}/v1`;
+}
+
 export const useAIConfigStore = create<AIConfigState>((set, get) => ({
   // 初始状态
   providers: [],
@@ -85,7 +92,11 @@ export const useAIConfigStore = create<AIConfigState>((set, get) => ({
 
   addProvider: async (provider, apiKey) => {
     try {
-      await apiAddProvider(provider, apiKey);
+      const normalizedProvider = {
+        ...provider,
+        base_url: normalizeProviderBaseUrl(provider.base_url, provider.provider_type),
+      };
+      await apiAddProvider(normalizedProvider, apiKey);
       await apiSetActiveProvider(provider.id);
       await get().loadConfig();
     } catch (error) {
@@ -96,7 +107,11 @@ export const useAIConfigStore = create<AIConfigState>((set, get) => ({
 
   updateProvider: async (provider, apiKey) => {
     try {
-      await apiUpdateProvider(provider, apiKey);
+      const normalizedProvider = {
+        ...provider,
+        base_url: normalizeProviderBaseUrl(provider.base_url, provider.provider_type),
+      };
+      await apiUpdateProvider(normalizedProvider, apiKey);
       await get().loadConfig();
     } catch (error) {
       set({ error: String(error) });
@@ -133,6 +148,7 @@ export const useAIConfigStore = create<AIConfigState>((set, get) => ({
       await get().loadConfig();
     } catch (error) {
       set({ error: String(error) });
+      throw error;
     } finally {
       set((state) => ({
         refreshingModels: { ...state.refreshingModels, [providerId]: false },

@@ -51,5 +51,40 @@ export async function runAiEngineSpawnSuite({ rootDir }) {
     pass("Malformed JSONL input handled gracefully");
   }
 
+  // Test 4: provider.models missing should not crash ai-engine before network request
+  if (existsSync(builtPath)) {
+    const result = spawnSync("node", [builtPath], {
+      input:
+        JSON.stringify({
+          type: "complete",
+          provider: {
+            id: "test-provider",
+            name: "Test Provider",
+            baseURL: "http://127.0.0.1:1/v1",
+            apiKey: "test-key",
+            providerType: "openai-compatible",
+          },
+          parameters: {
+            model: "gpt-5.4",
+            temperature: 0,
+            topP: 1,
+            maxTokens: 16,
+          },
+          systemPrompt: "test",
+          messages: [{ role: "user", content: "hello" }],
+        }) + "\n",
+      timeout: 10000,
+      encoding: "utf8",
+    });
+    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    if (/Cannot read properties of undefined \(reading 'length'\)/.test(combined)) {
+      fail("ai-engine crashed when provider.models was omitted");
+    }
+    if (result.status === null && result.signal) {
+      fail(`ai-engine crashed with signal ${result.signal} when provider.models was omitted`);
+    }
+    pass("provider.models omitted no longer crashes ai-engine");
+  }
+
   console.log("[ai-engine-spawn] All spawn tests passed.");
 }

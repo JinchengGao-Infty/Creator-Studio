@@ -24,11 +24,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "bin/ai-engine"
-    ],
     "resources": [
-      "bin/ai-engine.js"
+      "bin/ai-engine.js",
+      "bin/ai-engine-daemon.js"
     ],
     "icon": [
       "icons/32x32.png",

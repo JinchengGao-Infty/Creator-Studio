@@ -234,24 +234,38 @@ async fn refresh_provider_models(
     let api_key = keyring_store::get_api_key(&provider_id)?
         .ok_or(format!("API Key not found for provider {}", provider_id))?;
 
-    let base_url = provider.base_url.clone();
     let provider_type = match provider.provider_type {
         config::ProviderType::OpenaiCompatible => "openai-compatible",
         config::ProviderType::Google => "google",
         config::ProviderType::Anthropic => "anthropic",
     }
     .to_string();
+    let normalized_base_url = if matches!(provider.provider_type, config::ProviderType::OpenaiCompatible)
+    {
+        let trimmed = provider.base_url.trim_end_matches('/').to_string();
+        if trimmed.ends_with("/v1") {
+            trimmed
+        } else {
+            format!("{trimmed}/v1")
+        }
+    } else {
+        provider.base_url.clone()
+    };
 
     // Use daemon HTTP proxy instead of spawning one-shot process
     let daemon_arc = daemon.inner().clone();
+    let fetch_base_url = normalized_base_url.clone();
     let models = tauri::async_runtime::spawn_blocking(move || {
-        ai_proxy::fetch_models(&daemon_arc, &provider_type, &base_url, &api_key)
+        ai_proxy::fetch_models(&daemon_arc, &provider_type, &fetch_base_url, &api_key)
     })
     .await
     .map_err(|e| format!("refresh_provider_models join error: {e}"))??;
 
     let mut config = config::load_config()?;
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider_id) {
+        if matches!(p.provider_type, config::ProviderType::OpenaiCompatible) {
+            p.base_url = normalized_base_url.clone();
+        }
         p.models = models.clone();
         p.models_updated_at = Some(
             SystemTime::now()
@@ -602,7 +616,7 @@ pub fn run() {
             // Start AI daemon in background
             use tauri::Manager;
             let daemon = app.state::<Arc<ai_daemon::AIDaemon>>();
-            if let Ok(engine_path) = ai_bridge::get_ai_engine_path() {
+            if let Ok(engine_path) = ai_daemon::get_ai_engine_daemon_path() {
                 match daemon.start(&engine_path) {
                     Ok(port) => eprintln!("[setup] AI daemon started on port {port}"),
                     Err(e) => eprintln!("[setup] AI daemon start failed (will retry on first request): {e}"),

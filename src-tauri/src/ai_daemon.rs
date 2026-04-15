@@ -5,6 +5,7 @@
 
 use rand::Rng;
 use serde::Deserialize;
+use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -232,8 +233,8 @@ impl AIDaemon {
         let path = match self.engine_path.lock().unwrap().clone() {
             Some(p) => p,
             None => {
-                eprintln!("[ai-daemon] No engine path set, attempting path discovery...");
-                crate::ai_bridge::get_ai_engine_path()?
+                eprintln!("[ai-daemon] No engine path set, attempting daemon path discovery...");
+                get_ai_engine_daemon_path()?
             }
         };
 
@@ -325,6 +326,134 @@ impl AIDaemon {
     }
 }
 
+fn dev_repo_root_dir() -> Option<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.to_path_buf())
+}
+
+fn current_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+}
+
+fn find_daemon_in_dir(dir: &Path) -> Option<PathBuf> {
+    let direct_names = if cfg!(windows) {
+        vec![
+            "ai-engine-daemon.js".to_string(),
+            "ai-engine-daemon.exe".to_string(),
+            "ai-engine-daemon".to_string(),
+        ]
+    } else {
+        vec!["ai-engine-daemon.js".to_string(), "ai-engine-daemon".to_string()]
+    };
+
+    for name in direct_names {
+        let candidate = dir.join(&name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    let entries = fs::read_dir(dir).ok()?;
+    let mut js_candidate: Option<PathBuf> = None;
+    let mut fallback_candidate: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name.starts_with("ai-engine-daemon") && path.is_file() {
+            if name.ends_with(".js") {
+                js_candidate = Some(path);
+                continue;
+            }
+            fallback_candidate.get_or_insert(path);
+        }
+    }
+    js_candidate.or(fallback_candidate)
+}
+
+fn find_bundled_ai_engine_daemon() -> Option<PathBuf> {
+    let exe_dir = current_exe_dir()?;
+    let candidates = [
+        exe_dir.join("../Resources/bin"),
+        exe_dir.join("../Resources"),
+        exe_dir.join("bin"),
+        exe_dir.clone(),
+    ];
+
+    for dir in candidates {
+        if let Some(found) = find_daemon_in_dir(&dir) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_dev_sidecar_ai_engine_daemon() -> Option<PathBuf> {
+    let root = dev_repo_root_dir()?;
+    let dir = root.join("src-tauri/bin");
+    if !dir.exists() {
+        return None;
+    }
+    find_daemon_in_dir(&dir)
+}
+
+pub fn get_ai_engine_daemon_path() -> Result<PathBuf, String> {
+    let mut override_error: Option<String> = None;
+
+    if let Ok(raw) = std::env::var("CREATORAI_AI_ENGINE_DAEMON_PATH") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let candidate = PathBuf::from(trimmed);
+            let resolved = if candidate.is_absolute() {
+                candidate
+            } else {
+                dev_repo_root_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(candidate)
+            };
+            if !resolved.exists() {
+                override_error = Some(format!(
+                    "ai-engine daemon override not found: {}",
+                    resolved.display()
+                ));
+            } else {
+                eprintln!("[ai-daemon] Using override path: {}", resolved.display());
+                return Ok(resolved);
+            }
+        }
+    }
+
+    if let Some(path) = find_bundled_ai_engine_daemon() {
+        eprintln!("[ai-daemon] Found bundled daemon at: {}", path.display());
+        return Ok(path);
+    }
+
+    if let Some(path) = find_dev_sidecar_ai_engine_daemon() {
+        eprintln!("[ai-daemon] Found dev daemon sidecar at: {}", path.display());
+        return Ok(path);
+    }
+
+    if let Some(root) = dev_repo_root_dir() {
+        let source = root.join("packages/ai-engine/src/server.ts");
+        if source.exists() {
+            eprintln!("[ai-daemon] Falling back to source daemon entrypoint: {}", source.display());
+            return Ok(source);
+        }
+    }
+
+    let mut message =
+        "ai-engine daemon not found. Ensure `npm run ai-engine:build` generated `ai-engine-daemon.js`, or set `CREATORAI_AI_ENGINE_DAEMON_PATH`."
+            .to_string();
+    if let Some(prefix) = override_error {
+        message = format!("{prefix}\n\n{message}");
+    }
+    Err(message)
+}
+
 impl Drop for AIDaemon {
     fn drop(&mut self) {
         self.kill_child_inner();
@@ -358,6 +487,44 @@ fn is_script_path(path: &Path) -> bool {
     )
 }
 
+fn runtime_candidates(runtime: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            candidates.push(dir.join(runtime));
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        if runtime == "bun" {
+            candidates.push(home.join(".bun/bin/bun"));
+        }
+    }
+
+    match runtime {
+        "node" => {
+            candidates.push(PathBuf::from("/opt/homebrew/bin/node"));
+            candidates.push(PathBuf::from("/usr/local/bin/node"));
+            candidates.push(PathBuf::from("/usr/bin/node"));
+        }
+        "bun" => {
+            candidates.push(PathBuf::from("/opt/homebrew/bin/bun"));
+            candidates.push(PathBuf::from("/usr/local/bin/bun"));
+        }
+        _ => {}
+    }
+
+    candidates
+}
+
+fn resolve_runtime_path(runtime: &str) -> Option<PathBuf> {
+    runtime_candidates(runtime)
+        .into_iter()
+        .find(|candidate| candidate.exists() && candidate.is_file())
+}
+
 /// Build the Command to spawn the daemon process.
 fn build_daemon_command(engine_path: &Path, shared_secret: &str) -> Result<Command, String> {
     let mut cmd = if is_script_path(engine_path) {
@@ -371,7 +538,14 @@ fn build_daemon_command(engine_path: &Path, shared_secret: &str) -> Result<Comma
             ("node", vec![])
         };
 
-        let mut c = Command::new(runtime);
+        let runtime_path = resolve_runtime_path(runtime).ok_or_else(|| {
+            format!(
+                "Failed to start AI daemon from '{}': runtime `{runtime}` not found. Install the runtime or bundle a prebuilt sidecar.",
+                engine_path.display()
+            )
+        })?;
+
+        let mut c = Command::new(runtime_path);
         for arg in &args {
             c.arg(arg);
         }
@@ -483,14 +657,14 @@ mod tests {
     fn test_build_daemon_command_js() {
         let cmd = build_daemon_command(Path::new("/tmp/ai-engine.js"), "secret123").unwrap();
         let program = cmd.get_program().to_str().unwrap();
-        assert_eq!(program, "node");
+        assert!(program.ends_with("/node") || program == "node");
     }
 
     #[test]
     fn test_build_daemon_command_ts() {
         let cmd = build_daemon_command(Path::new("/tmp/server.ts"), "secret123").unwrap();
         let program = cmd.get_program().to_str().unwrap();
-        assert_eq!(program, "bun");
+        assert!(program.ends_with("/bun") || program == "bun");
     }
 
     #[test]
@@ -498,6 +672,30 @@ mod tests {
         let cmd = build_daemon_command(Path::new("/tmp/ai-engine"), "secret123").unwrap();
         let program = cmd.get_program().to_str().unwrap();
         assert_eq!(program, "/tmp/ai-engine");
+    }
+
+    #[test]
+    fn test_find_daemon_in_dir_prefers_js_entrypoint() {
+        let dir = std::env::temp_dir().join(format!(
+            "creatorai-v2-daemon-dir-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake_binary = dir.join(if cfg!(windows) {
+            "ai-engine-daemon.exe"
+        } else {
+            "ai-engine-daemon"
+        });
+        let js = dir.join("ai-engine-daemon.js");
+        std::fs::write(&fake_binary, "fake").unwrap();
+        std::fs::write(&js, "real").unwrap();
+
+        let found = find_daemon_in_dir(&dir).expect("should find daemon");
+        assert_eq!(found, js);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

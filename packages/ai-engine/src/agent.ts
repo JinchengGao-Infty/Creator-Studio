@@ -20,6 +20,13 @@ export class Agent {
     this.providerManager = providerManager
   }
 
+  private assertModelAllowed(providerId: string, provider: { models?: string[] }, modelId: string) {
+    const allowedModels = Array.isArray(provider.models) ? provider.models : []
+    if (allowedModels.length > 0 && !allowedModels.includes(modelId)) {
+      throw new Error(`Model not allowed by provider (${providerId}): ${modelId}`)
+    }
+  }
+
   // 纯文本补全（不启用工具）
   async complete(messages: Message[], context: Omit<AgentContext, 'executeTools'>): Promise<AgentResult> {
     const provider = this.providerManager.getProvider(context.providerId)
@@ -27,11 +34,7 @@ export class Agent {
       throw new Error(`Provider not found: ${context.providerId}`)
     }
 
-    if (provider.models.length > 0 && !provider.models.includes(context.parameters.model)) {
-      throw new Error(
-        `Model not allowed by provider (${context.providerId}): ${context.parameters.model}`,
-      )
-    }
+    this.assertModelAllowed(context.providerId, provider, context.parameters.model)
 
     const sdk = this.providerManager.createSDK(context.providerId)
     const model = sdk(context.parameters.model)
@@ -68,11 +71,7 @@ export class Agent {
       throw new Error(`Provider not found: ${context.providerId}`)
     }
 
-    if (provider.models.length > 0 && !provider.models.includes(context.parameters.model)) {
-      throw new Error(
-        `Model not allowed by provider (${context.providerId}): ${context.parameters.model}`,
-      )
-    }
+    this.assertModelAllowed(context.providerId, provider, context.parameters.model)
 
     const sdk = this.providerManager.createSDK(context.providerId)
     const model = sdk(context.parameters.model)

@@ -21,7 +21,7 @@ function pass(message) {
  * 测试用例：AI 引擎打包和启动测试
  * 
  * 测试内容：
- * 1. 验证 ai-engine.js 文件存在
+ * 1. 验证 ai-engine.js / ai-engine-daemon.js 文件存在
  * 2. 验证 Node.js 运行时可用
  * 3. 测试 ai-engine CLI 基本执行
  * 4. 测试 fetch_models 功能
@@ -42,7 +42,7 @@ export async function runAiEnginePackagingSuite({ rootDir }) {
   const binFiles = readdirSync(srcTauriBin);
   log(`  bin 目录中的文件: ${binFiles.join(", ")}`);
 
-  const expectedFiles = ["ai-engine.js"];
+  const expectedFiles = ["ai-engine.js", "ai-engine-daemon.js"];
   const hasExpectedFiles = expectedFiles.every(f => 
     binFiles.some(bf => bf.includes(f))
   );
@@ -91,6 +91,56 @@ export async function runAiEnginePackagingSuite({ rootDir }) {
     log(`  注意: --help 参数可能不支持 (exit code: ${helpResult.status})`);
   }
   pass("ai-engine.js 可执行性检查通过");
+
+  // ========== 测试 3b: 测试 ai-engine-daemon.js 可启动 ==========
+  log("测试 3b: 测试 ai-engine-daemon.js 可启动");
+
+  const aiEngineDaemonJs = resolve(srcTauriBin, "ai-engine-daemon.js");
+  if (!existsSync(aiEngineDaemonJs)) {
+    fail(`ai-engine-daemon.js 文件不存在: ${aiEngineDaemonJs}`);
+  }
+
+  const daemonChild = spawn("node", [aiEngineDaemonJs], {
+    encoding: "utf8",
+    shell: process.platform === "win32",
+    env: { ...process.env, CREATORAI_SHARED_SECRET: "test-secret", CREATORAI_PORT: "0" }
+  });
+
+  const startupLine = await new Promise((resolve, reject) => {
+    let buffer = "";
+    const timeout = setTimeout(() => reject(new Error("daemon startup timeout")), 5000);
+
+    daemonChild.stdout?.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex !== -1) {
+        clearTimeout(timeout);
+        resolve(buffer.slice(0, newlineIndex).trim());
+      }
+    });
+
+    daemonChild.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+
+    daemonChild.on("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`daemon exited early with code ${code}`));
+    });
+  }).finally(() => {
+    daemonChild.kill("SIGTERM");
+  });
+
+  try {
+    const parsed = JSON.parse(startupLine);
+    if (!parsed.port || !parsed.version) {
+      fail(`ai-engine-daemon.js 启动消息缺少字段: ${startupLine}`);
+    }
+  } catch (error) {
+    fail(`ai-engine-daemon.js 启动消息不是合法 JSON: ${startupLine}`);
+  }
+  pass("ai-engine-daemon.js 启动检查通过");
 
   // ========== 测试 4: 测试 fetch_models 功能 ==========
   log("测试 4: 测试 fetch_models 功能");
@@ -169,14 +219,19 @@ export async function runAiEnginePackagingSuite({ rootDir }) {
       
       const bundle = conf.bundle;
       if (bundle) {
-        log(`  externalBin: ${JSON.stringify(bundle.externalBin)}`);
         log(`  resources: ${JSON.stringify(bundle.resources)}`);
         
         // 验证配置与实际文件匹配
-        if (bundle.resources?.includes("bin/ai-engine.js")) {
+        const requiredResources = ["bin/ai-engine.js", "bin/ai-engine-daemon.js"];
+        const hasResources = requiredResources.every((item) => bundle.resources?.includes(item));
+        if (hasResources) {
           pass("tauri.conf.json resources 配置正确");
         } else {
-          log("  警告: resources 配置可能不包含 bin/ai-engine.js");
+          log("  警告: resources 配置可能缺少 ai-engine 资源");
+        }
+
+        if (Array.isArray(bundle.externalBin) && bundle.externalBin.length > 0) {
+          fail(`tauri.conf.json 不应再使用 externalBin 打包 JS sidecar: ${JSON.stringify(bundle.externalBin)}`);
         }
       }
     } catch (error) {
