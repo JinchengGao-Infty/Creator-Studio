@@ -4,13 +4,16 @@ use fastembed::{
     UserDefinedEmbeddingModel,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::project::{ChapterIndex, ChapterMeta};
 use crate::security::validate_path;
+use crate::summary::{self, SummaryEntry};
 use crate::write_protection;
 
 const KNOWLEDGE_DIR: &str = "knowledge";
@@ -23,6 +26,7 @@ const LOCAL_EMBEDDING_MODEL_DIR: &str = ".creatorai/rag/models/Xenova/bge-small-
 const LOCAL_EMBEDDING_MODEL_NAME: &str = "Xenova/bge-small-zh-v1.5";
 const HF_CACHE_DIR: &str = ".creatorai/rag/hf-cache";
 const HF_MIRROR_ENDPOINT: &str = "https://hf-mirror.com";
+const RAG_API_SECRET_PREFIX: &str = "rag_embedding_api";
 
 fn now_unix_seconds() -> Result<u64, String> {
     SystemTime::now()
@@ -98,6 +102,8 @@ pub struct RagConfig {
     pub schema_version: u32,
     pub enabled_paths: Vec<String>,
     pub embedding_backend: String,
+    pub api_base_url: String,
+    pub api_model: String,
 }
 
 impl Default for RagConfig {
@@ -106,8 +112,30 @@ impl Default for RagConfig {
             schema_version: RAG_SCHEMA_VERSION,
             enabled_paths: Vec::new(),
             embedding_backend: "local".to_string(),
+            api_base_url: String::new(),
+            api_model: "text-embedding-3-small".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagConfigPayload {
+    pub schema_version: u32,
+    pub enabled_paths: Vec<String>,
+    pub embedding_backend: String,
+    pub api_base_url: String,
+    pub api_model: String,
+    pub has_api_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagConfigUpdate {
+    pub embedding_backend: String,
+    pub api_base_url: String,
+    pub api_model: String,
+    pub api_key: Option<String>,
 }
 
 #[cfg(test)]
@@ -130,6 +158,7 @@ pub struct RagEmbeddingStatus {
     pub cache_dir: String,
     pub index_exists: bool,
     pub requires_download: bool,
+    pub api_configured: bool,
     pub message: Option<String>,
 }
 
@@ -151,6 +180,53 @@ fn load_config(project_root: &Path) -> Result<RagConfig, String> {
     let bytes = fs::read(&path).map_err(|e| format!("Failed to read rag config: {e}"))?;
     serde_json::from_slice::<RagConfig>(&bytes)
         .map_err(|e| format!("Failed to parse rag config: {e}"))
+}
+
+fn current_rag_config(project_root: &Path) -> Result<RagConfigPayload, String> {
+    let config = load_config(project_root)?;
+    Ok(RagConfigPayload {
+        schema_version: config.schema_version,
+        enabled_paths: config.enabled_paths,
+        embedding_backend: config.embedding_backend,
+        api_base_url: config.api_base_url,
+        api_model: config.api_model,
+        has_api_key: embedding_api_key(project_root)?.is_some(),
+    })
+}
+
+pub fn get_rag_config(project_root: &Path) -> Result<RagConfigPayload, String> {
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    ensure_knowledge_dir(&project_root)?;
+    ensure_rag_dir(&project_root)?;
+    current_rag_config(&project_root)
+}
+
+pub fn update_rag_config(project_root: &Path, update: RagConfigUpdate) -> Result<RagConfigPayload, String> {
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    ensure_knowledge_dir(&project_root)?;
+    ensure_rag_dir(&project_root)?;
+
+    let backend = normalize_embedding_backend(&update.embedding_backend)?;
+    let mut config = load_config(&project_root)?;
+    config.embedding_backend = backend;
+    config.api_base_url = update.api_base_url.trim().to_string();
+    config.api_model = update.api_model.trim().to_string();
+    save_config(&project_root, &config)?;
+
+    if let Some(api_key) = update.api_key {
+        let trimmed = api_key.trim();
+        if trimmed.is_empty() {
+            let _ = crate::keyring_store::delete_api_key(&embedding_api_secret_id(&project_root)?);
+        } else {
+            crate::keyring_store::store_api_key(&embedding_api_secret_id(&project_root)?, trimmed)?;
+        }
+    }
+
+    current_rag_config(&project_root)
 }
 
 fn save_config(project_root: &Path, config: &RagConfig) -> Result<(), String> {
@@ -181,6 +257,50 @@ fn save_embedding_marker(project_root: &Path, marker: &RagEmbeddingMarker) -> Re
         .map_err(|e| format!("Serialize embedding marker failed: {e}"))?;
     write_protection::write_string_with_backup(project_root, &path, &format!("{json}\n"))
         .map(|_| ())
+}
+
+fn normalize_embedding_backend(raw: &str) -> Result<String, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "local" => Ok("local".to_string()),
+        "api" => Ok("api".to_string()),
+        "disabled" => Ok("disabled".to_string()),
+        other => Err(format!("Unsupported embedding backend: {other}")),
+    }
+}
+
+fn normalize_openai_base_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
+fn embedding_api_secret_id(project_root: &Path) -> Result<String, String> {
+    let canonical = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    Ok(format!("{RAG_API_SECRET_PREFIX}_{digest}"))
+}
+
+fn embedding_api_key(project_root: &Path) -> Result<Option<String>, String> {
+    let secret_id = embedding_api_secret_id(project_root)?;
+    crate::keyring_store::get_api_key(&secret_id)
+}
+
+fn read_chapter_index(project_root: &Path) -> Result<ChapterIndex, String> {
+    let index_path = validate_path(project_root, "chapters/index.json")?;
+    let bytes =
+        fs::read(&index_path).map_err(|e| format!("Failed to read chapters/index.json: {e}"))?;
+    serde_json::from_slice::<ChapterIndex>(&bytes)
+        .map_err(|e| format!("Failed to parse chapters/index.json: {e}"))
 }
 
 fn normalize_doc_path(relative: &str) -> Result<String, String> {
@@ -589,6 +709,83 @@ fn embedder(project_root: &Path, allow_download: bool) -> Result<MutexGuard<'sta
         .map_err(|_| "Embedding model lock poisoned".to_string())
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbeddingItem {
+    embedding: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIEmbeddingsResponse {
+    data: Vec<OpenAIEmbeddingItem>,
+}
+
+fn embed_via_api(project_root: &Path, config: &RagConfig, inputs: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let base_url = normalize_openai_base_url(&config.api_base_url);
+    if base_url.is_empty() {
+        return Err("API embedding backend 未配置 base URL".to_string());
+    }
+    let model = config.api_model.trim();
+    if model.is_empty() {
+        return Err("API embedding backend 未配置模型名".to_string());
+    }
+    let api_key = embedding_api_key(project_root)?
+        .ok_or("API embedding backend 未配置 API Key".to_string())?;
+    let endpoint = format!("{base_url}/embeddings");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to build embedding API client: {e}"))?;
+
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(api_key)
+        .json(&serde_json::json!({
+            "model": model,
+            "input": inputs,
+        }))
+        .send()
+        .map_err(|e| format!("Embedding API request failed: {e}"))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|e| format!("Failed to read embedding API response: {e}"))?;
+
+    if !status.is_success() {
+        let preview = body.chars().take(240).collect::<String>();
+        return Err(format!("Embedding API returned {status}: {preview}"));
+    }
+
+    let parsed = serde_json::from_str::<OpenAIEmbeddingsResponse>(&body)
+        .map_err(|e| format!("Invalid embedding API response: {e}"))?;
+    Ok(parsed.data.into_iter().map(|item| item.embedding).collect())
+}
+
+fn embed_texts(project_root: &Path, texts: &[String], allow_download: bool) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let config = load_config(project_root)?;
+    let backend = normalize_embedding_backend(&config.embedding_backend)?;
+    match backend.as_str() {
+        "disabled" => Err("当前项目的 embedding backend 已禁用".to_string()),
+        "api" => embed_via_api(project_root, &config, texts),
+        _ => {
+            let mut embedder = embedder(project_root, allow_download)?;
+            let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            embedder
+                .embed(inputs, None)
+                .map_err(|e| format!("Embedding failed: {e}"))
+        }
+    }
+}
+
 pub fn embedding_status(project_root: &Path) -> Result<RagEmbeddingStatus, String> {
     let project_root = project_root
         .canonicalize()
@@ -596,34 +793,62 @@ pub fn embedding_status(project_root: &Path) -> Result<RagEmbeddingStatus, Strin
     ensure_knowledge_dir(&project_root)?;
     ensure_rag_dir(&project_root)?;
     let config = load_config(&project_root)?;
+    let backend = normalize_embedding_backend(&config.embedding_backend)?;
+    let api_configured = !config.api_base_url.trim().is_empty()
+        && !config.api_model.trim().is_empty()
+        && embedding_api_key(&project_root)?.is_some();
     let local_dir = local_model_dir(&project_root)?;
     let marker = load_embedding_marker(&project_root)?;
     let (local_complete, local_touched, local_issue) = local_model_state(&local_dir)?;
     let index_exists = index_path(&project_root)?.exists();
 
-    let (installed, source, message) = if local_complete {
-        (true, "local-files".to_string(), None)
-    } else if let Some(existing) = marker {
-        (true, existing.source, None)
-    } else if local_touched {
-        (false, "local-files".to_string(), local_issue)
-    } else {
-        (
+    let (installed, source, message, requires_download) = match backend.as_str() {
+        "disabled" => (
             false,
-            "missing".to_string(),
-            Some("未安装 embedding 模型。主功能不受影响，需要语义检索时再下载即可。".to_string()),
-        )
+            "disabled".to_string(),
+            Some("当前项目已禁用 embedding 检索。".to_string()),
+            false,
+        ),
+        "api" => {
+            let message = if api_configured {
+                None
+            } else {
+                Some("API embedding backend 尚未配置完整。请填写 base URL、模型名和 API Key。".to_string())
+            };
+            (api_configured, "api".to_string(), message, false)
+        }
+        _ => {
+            if local_complete {
+                (true, "local-files".to_string(), None, false)
+            } else if let Some(existing) = marker {
+                (true, existing.source, None, false)
+            } else if local_touched {
+                (false, "local-files".to_string(), local_issue, true)
+            } else {
+                (
+                    false,
+                    "missing".to_string(),
+                    Some("未安装 embedding 模型。主功能不受影响，需要语义检索时再下载即可。".to_string()),
+                    true,
+                )
+            }
+        }
     };
 
     Ok(RagEmbeddingStatus {
-        backend: config.embedding_backend,
+        backend,
         installed,
         source,
-        model: LOCAL_EMBEDDING_MODEL_NAME.to_string(),
+        model: if config.api_model.trim().is_empty() {
+            LOCAL_EMBEDDING_MODEL_NAME.to_string()
+        } else {
+            config.api_model.clone()
+        },
         local_model_dir: LOCAL_EMBEDDING_MODEL_DIR.to_string(),
         cache_dir: HF_CACHE_DIR.to_string(),
         index_exists,
-        requires_download: !installed,
+        requires_download,
+        api_configured,
         message,
     })
 }
@@ -634,11 +859,16 @@ pub fn prepare_embedding_model(project_root: &Path) -> Result<RagEmbeddingStatus
         .map_err(|e| format!("Invalid project path: {e}"))?;
     ensure_knowledge_dir(&project_root)?;
     ensure_rag_dir(&project_root)?;
+    let config = load_config(&project_root)?;
+    let backend = normalize_embedding_backend(&config.embedding_backend)?;
+    if backend != "local" {
+        return Err("只有 local embedding backend 需要下载本地模型".to_string());
+    }
     let _ = init_embedding_model(&project_root, true)?;
     save_embedding_marker(
         &project_root,
         &RagEmbeddingMarker {
-            backend: "local".to_string(),
+            backend,
             source: "downloaded".to_string(),
             model: LOCAL_EMBEDDING_MODEL_NAME.to_string(),
             prepared_at: now_unix_seconds()?,
@@ -726,11 +956,7 @@ pub fn build_index(project_root: &Path) -> Result<RagIndexSummary, String> {
         }
     }
 
-    let mut embedder = embedder(&project_root, false)?;
-    let inputs: Vec<&str> = chunk_texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder
-        .embed(inputs, None)
-        .map_err(|e| format!("Embedding failed: {e}"))?;
+    let embeddings = embed_texts(&project_root, &chunk_texts, false)?;
 
     if embeddings.len() != chunk_sources.len() {
         return Err("Embedding count mismatch".to_string());
@@ -802,6 +1028,156 @@ pub struct RagHit {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WritingContextSection {
+    pub kind: String,
+    pub source: String,
+    pub title: String,
+    pub text: String,
+    pub score: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WritingContextResult {
+    pub backend: String,
+    pub chapter_id: String,
+    pub chapter_title: Option<String>,
+    pub query: String,
+    pub sections: Vec<WritingContextSection>,
+    pub combined_context: String,
+    pub warnings: Vec<String>,
+}
+
+fn chapter_meta_by_id(index: &ChapterIndex, chapter_id: &str) -> Option<ChapterMeta> {
+    index.chapters.iter().find(|chapter| chapter.id == chapter_id).cloned()
+}
+
+fn chapter_tail_text(project_root: &Path, chapter_id: &str, max_chars: usize) -> Result<String, String> {
+    let path = validate_path(project_root, &format!("chapters/{chapter_id}.txt"))?;
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read chapter content: {e}"))?;
+    let chars = content.chars().collect::<Vec<_>>();
+    let start = chars.len().saturating_sub(max_chars);
+    Ok(chars[start..].iter().collect::<String>())
+}
+
+fn latest_summary_by_chapter(summaries: &[SummaryEntry]) -> Vec<SummaryEntry> {
+    let mut latest = std::collections::HashMap::<String, SummaryEntry>::new();
+    for entry in summaries {
+        let replace = latest
+            .get(&entry.chapter_id)
+            .map(|existing| entry.created_at >= existing.created_at)
+            .unwrap_or(true);
+        if replace {
+            latest.insert(entry.chapter_id.clone(), entry.clone());
+        }
+    }
+    latest.into_values().collect()
+}
+
+pub fn get_writing_context(
+    project_root: &Path,
+    chapter_id: String,
+    query: String,
+    top_k: usize,
+) -> Result<WritingContextResult, String> {
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    ensure_knowledge_dir(&project_root)?;
+    ensure_rag_dir(&project_root)?;
+
+    let index = read_chapter_index(&project_root)?;
+    let chapter_meta = chapter_meta_by_id(&index, &chapter_id)
+        .ok_or_else(|| format!("Chapter not found: {chapter_id}"))?;
+
+    let mut warnings = Vec::new();
+    let mut sections = Vec::new();
+    let backend = normalize_embedding_backend(&load_config(&project_root)?.embedding_backend)?;
+
+    let chapter_tail = chapter_tail_text(&project_root, &chapter_id, 1800)?;
+    if !chapter_tail.trim().is_empty() {
+        sections.push(WritingContextSection {
+            kind: "chapter-tail".to_string(),
+            source: format!("chapters/{chapter_id}.txt"),
+            title: "当前章节末尾".to_string(),
+            text: chapter_tail,
+            score: None,
+        });
+    }
+
+    let summaries = summary::load_summaries(&project_root)?;
+    let latest_summaries = latest_summary_by_chapter(&summaries);
+    let mut ordered_chapters = index.chapters.clone();
+    ordered_chapters.sort_by_key(|chapter| chapter.order);
+    let current_order = chapter_meta.order;
+    let recent_summary_sections = ordered_chapters
+        .into_iter()
+        .filter(|chapter| chapter.order <= current_order)
+        .filter_map(|chapter| {
+            latest_summaries
+                .iter()
+                .find(|entry| entry.chapter_id == chapter.id)
+                .map(|entry| WritingContextSection {
+                    kind: "summary".to_string(),
+                    source: "summaries.json".to_string(),
+                    title: format!("章节摘要 · {}", chapter.title),
+                    text: entry.summary.clone(),
+                    score: None,
+                })
+        })
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>();
+    sections.extend(recent_summary_sections.into_iter().rev());
+
+    let trimmed_query = query.trim().to_string();
+    if !trimmed_query.is_empty() && backend != "disabled" {
+        match search(&project_root, &trimmed_query, top_k.max(1)) {
+            Ok(hits) => {
+                for hit in hits {
+                    sections.push(WritingContextSection {
+                        kind: "retrieved".to_string(),
+                        source: hit.path.clone(),
+                        title: format!("知识检索 · {}", hit.path),
+                        text: hit.text,
+                        score: Some(hit.score),
+                    });
+                }
+            }
+            Err(error) => warnings.push(error),
+        }
+    } else if backend == "disabled" {
+        warnings.push("当前项目已禁用 embedding 检索，仅注入章节上下文与摘要。".to_string());
+    }
+
+    let combined_context = sections
+        .iter()
+        .map(|section| {
+            let mut header = format!("## {}", section.title);
+            if let Some(score) = section.score {
+                header.push_str(&format!(" (score={score:.3})"));
+            }
+            format!("{header}\n来源：{}\n\n{}", section.source, section.text.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    Ok(WritingContextResult {
+        backend,
+        chapter_id,
+        chapter_title: Some(chapter_meta.title),
+        query: trimmed_query,
+        sections,
+        combined_context,
+        warnings,
+    })
+}
+
 pub fn search(project_root: &Path, query: &str, top_k: usize) -> Result<Vec<RagHit>, String> {
     let project_root = project_root
         .canonicalize()
@@ -826,10 +1202,7 @@ pub fn search(project_root: &Path, query: &str, top_k: usize) -> Result<Vec<RagH
         return Ok(Vec::new());
     }
 
-    let mut embedder = embedder(&project_root, false)?;
-    let q_emb = embedder
-        .embed(vec![q], None)
-        .map_err(|e| format!("Embedding failed: {e}"))?;
+    let q_emb = embed_texts(&project_root, &[q.to_string()], false)?;
     let Some(first) = q_emb.into_iter().next() else {
         return Ok(Vec::new());
     };
@@ -874,6 +1247,42 @@ mod tests {
         fs::create_dir_all(root.join("chapters")).unwrap();
         fs::write(root.join(".creatorai/config.json"), "{\n  \"project\": \"test\"\n}\n").unwrap();
         fs::write(root.join("chapters/index.json"), "[]\n").unwrap();
+        root
+    }
+
+    fn create_story_project(label: &str) -> PathBuf {
+        let root = unique_temp_project_dir(label);
+        fs::create_dir_all(root.join(".creatorai")).unwrap();
+        fs::create_dir_all(root.join("chapters")).unwrap();
+        fs::create_dir_all(root.join("knowledge")).unwrap();
+        fs::write(root.join(".creatorai/config.json"), "{\n  \"project\": \"story\"\n}\n").unwrap();
+        fs::write(
+            root.join("chapters/index.json"),
+            r#"{
+  "chapters": [
+    {"id":"chapter_001","title":"第一章","order":1,"created":1,"updated":1,"wordCount":12},
+    {"id":"chapter_002","title":"第二章","order":2,"created":2,"updated":2,"wordCount":20}
+  ],
+  "nextId": 3
+}
+"#,
+        )
+        .unwrap();
+        fs::write(root.join("chapters/chapter_001.txt"), "第一章正文。\n主角第一次进入旧城区。").unwrap();
+        fs::write(
+            root.join("chapters/chapter_002.txt"),
+            "第二章正文。\n他在雨夜里再次看见那个熟悉的背影，心里忽然一沉。",
+        )
+        .unwrap();
+        fs::write(
+            root.join("summaries.json"),
+            r#"[
+  {"chapterId":"chapter_001","summary":"第一章：主角进入旧城区，埋下陌生人线索。","createdAt":10},
+  {"chapterId":"chapter_002","summary":"第二章：主角在雨夜重见旧人，警觉升级。","createdAt":20}
+]
+"#,
+        )
+        .unwrap();
         root
     }
 
@@ -924,6 +1333,74 @@ mod tests {
             .message
             .unwrap_or_default()
             .contains("本地嵌入模型目录缺少必要文件"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_rag_config_persists_api_backend_without_key() {
+        let root = create_test_project("api-config");
+
+        let saved = update_rag_config(
+            &root,
+            RagConfigUpdate {
+                embedding_backend: "api".to_string(),
+                api_base_url: "https://example.com/v1".to_string(),
+                api_model: "embed-small".to_string(),
+                api_key: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(saved.embedding_backend, "api");
+        assert_eq!(saved.api_base_url, "https://example.com/v1");
+        assert_eq!(saved.api_model, "embed-small");
+        assert!(!saved.has_api_key);
+
+        let loaded = get_rag_config(&root).unwrap();
+        assert_eq!(loaded.embedding_backend, "api");
+        assert_eq!(loaded.api_model, "embed-small");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn get_writing_context_degrades_without_embedding_hits() {
+        let root = create_story_project("writing-context");
+        update_rag_config(
+            &root,
+            RagConfigUpdate {
+                embedding_backend: "disabled".to_string(),
+                api_base_url: String::new(),
+                api_model: String::new(),
+                api_key: None,
+            },
+        )
+        .unwrap();
+
+        let context = get_writing_context(
+            &root,
+            "chapter_002".to_string(),
+            "主角再次遇见旧人".to_string(),
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(context.backend, "disabled");
+        assert_eq!(context.chapter_id, "chapter_002");
+        assert!(context
+            .sections
+            .iter()
+            .any(|section| section.kind == "chapter-tail" && section.text.contains("雨夜里再次看见")));
+        assert!(context
+            .sections
+            .iter()
+            .any(|section| section.kind == "summary" && section.text.contains("警觉升级")));
+        assert!(context
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("已禁用 embedding 检索")));
+        assert!(context.combined_context.contains("当前章节末尾"));
 
         let _ = fs::remove_dir_all(root);
     }

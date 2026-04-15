@@ -28,6 +28,14 @@ export interface WritingContextDiagnostics {
   finalSystemPromptChars: number;
   finalSystemPromptPreview: string;
   sources: ContextSourceStat[];
+  warnings?: string[];
+}
+
+export interface RetrievedWritingContext {
+  backend: string;
+  combinedContext: string;
+  sectionCount: number;
+  warnings: string[];
 }
 
 function chapterFilePath(chapterId: string) {
@@ -224,6 +232,7 @@ export function buildWritingContextBundle(params: {
   chapterId: string | null;
   chapterTitle: string | null;
   worldSummary?: string;
+  retrievedContext?: RetrievedWritingContext | null;
 }): {
   messagesForAi: ChatMessage[];
   finalSystemPrompt: string;
@@ -257,9 +266,11 @@ export function buildWritingContextBundle(params: {
           writingPreset: presetPrompt,
         });
 
-  const finalSystemPrompt = params.worldSummary?.trim()
-    ? `${systemPrompt}\n\n${params.worldSummary.trim()}`
-    : systemPrompt;
+  const injectedBlocks = [
+    params.worldSummary?.trim() ? params.worldSummary.trim() : "",
+    params.retrievedContext?.combinedContext?.trim() ? `## 写作检索上下文\n\n${params.retrievedContext.combinedContext.trim()}` : "",
+  ].filter(Boolean);
+  const finalSystemPrompt = injectedBlocks.length ? `${systemPrompt}\n\n${injectedBlocks.join("\n\n")}` : systemPrompt;
   const messageStats = buildMessagesForAi(params.workingMessages);
   const sources: ContextSourceStat[] = [
     {
@@ -293,6 +304,15 @@ export function buildWritingContextBundle(params: {
           ? `${messageStats.compactSummaryMessages} 条 [系统摘要]`
           : "未使用",
     },
+    {
+      key: "retrieval",
+      label: "小说检索上下文",
+      included: !!params.retrievedContext?.combinedContext?.trim(),
+      chars: params.retrievedContext?.combinedContext?.trim().length ?? 0,
+      details: params.retrievedContext
+        ? `${params.retrievedContext.sectionCount} 段 · backend=${params.retrievedContext.backend}`
+        : "未注入",
+    },
   ];
 
   return {
@@ -312,6 +332,7 @@ export function buildWritingContextBundle(params: {
       finalSystemPromptChars: finalSystemPrompt.length,
       finalSystemPromptPreview: finalSystemPrompt.slice(0, 400),
       sources,
+      warnings: params.retrievedContext?.warnings ?? [],
     },
   };
 }

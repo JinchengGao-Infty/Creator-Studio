@@ -84,6 +84,13 @@ export default function ContextDiagnosticsPanel({ diagnostics }: ContextDiagnost
             <Typography.Text type="secondary">System Prompt 预览</Typography.Text>
             <pre>{promptPreview || "（空）"}</pre>
           </div>
+
+          {diagnostics.warnings?.length ? (
+            <div className="context-diagnostics-preview">
+              <Typography.Text type="secondary">装配警告</Typography.Text>
+              <pre>{diagnostics.warnings.join("\n")}</pre>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

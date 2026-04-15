@@ -29,7 +29,7 @@ use import::{import_txt, preview_import_txt};
 use presets::{get_presets, save_presets};
 use project::{create_project, get_project_info, open_project, save_project_config};
 use recent_projects::{add_recent_project, get_recent_projects};
-use rag::{append_doc as rag_append_doc_impl, build_index as rag_build_index_impl, embedding_status as rag_embedding_status_impl, list_docs as rag_list_docs_impl, prepare_embedding_model as rag_prepare_embedding_model_impl, read_doc as rag_read_doc_impl, search as rag_search_impl, set_doc_enabled as rag_set_doc_enabled_impl, write_doc as rag_write_doc_impl, KnowledgeDoc, RagEmbeddingStatus, RagHit, RagIndexSummary};
+use rag::{append_doc as rag_append_doc_impl, build_index as rag_build_index_impl, embedding_status as rag_embedding_status_impl, get_rag_config as rag_get_config_impl, get_writing_context as rag_get_writing_context_impl, list_docs as rag_list_docs_impl, prepare_embedding_model as rag_prepare_embedding_model_impl, read_doc as rag_read_doc_impl, search as rag_search_impl, set_doc_enabled as rag_set_doc_enabled_impl, update_rag_config as rag_update_config_impl, write_doc as rag_write_doc_impl, KnowledgeDoc, RagConfigPayload, RagConfigUpdate, RagEmbeddingStatus, RagHit, RagIndexSummary, WritingContextResult};
 use session::{
     add_message, create_session, delete_session, get_session_messages, list_sessions,
     rename_session, update_message_metadata, compact_session,
@@ -404,11 +404,37 @@ fn rag_embedding_status(project_path: String) -> Result<RagEmbeddingStatus, Stri
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn rag_get_config(project_path: String) -> Result<RagConfigPayload, String> {
+    rag_get_config_impl(Path::new(&project_path))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn rag_update_config(project_path: String, config: RagConfigUpdate) -> Result<RagConfigPayload, String> {
+    rag_update_config_impl(Path::new(&project_path), config)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn rag_prepare_embedding_model(project_path: String) -> Result<RagEmbeddingStatus, String> {
     let root = project_path.clone();
     tauri::async_runtime::spawn_blocking(move || rag_prepare_embedding_model_impl(Path::new(&root)))
         .await
         .map_err(|e| format!("rag_prepare_embedding_model join error: {e}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn rag_get_writing_context(
+    project_path: String,
+    chapter_id: String,
+    query: String,
+    top_k: Option<u32>,
+) -> Result<WritingContextResult, String> {
+    let root = project_path.clone();
+    let chapter = chapter_id.clone();
+    let q = query.clone();
+    let k = top_k.unwrap_or(4) as usize;
+    tauri::async_runtime::spawn_blocking(move || rag_get_writing_context_impl(Path::new(&root), chapter, q, k))
+        .await
+        .map_err(|e| format!("rag_get_writing_context join error: {e}"))?
 }
 
 #[derive(Default)]
@@ -674,7 +700,10 @@ pub fn run() {
             rag_build_index,
             rag_search,
             rag_embedding_status,
+            rag_get_config,
+            rag_update_config,
             rag_prepare_embedding_model,
+            rag_get_writing_context,
             ai_cancel,
             ai_complete_cancel,
             ai_complete,

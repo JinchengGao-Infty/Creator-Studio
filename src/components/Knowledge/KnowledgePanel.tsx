@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { Button, Card, Checkbox, Input, List, Modal, Space, Typography, message } from "antd";
+import { Button, Card, Checkbox, Input, List, Modal, Select, Space, Typography, message } from "antd";
 import { EditOutlined, FileAddOutlined, ReloadOutlined, SyncOutlined } from "@ant-design/icons";
 import { formatError } from "../../utils/error";
 
@@ -39,7 +39,17 @@ interface RagEmbeddingStatus {
   cacheDir: string;
   indexExists: boolean;
   requiresDownload: boolean;
+  apiConfigured: boolean;
   message?: string | null;
+}
+
+interface RagConfigPayload {
+  schemaVersion: number;
+  enabledPaths: string[];
+  embeddingBackend: string;
+  apiBaseUrl: string;
+  apiModel: string;
+  hasApiKey: boolean;
 }
 
 function formatBytes(bytes: number): string {
@@ -86,6 +96,12 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   const [searching, setSearching] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState<RagEmbeddingStatus | null>(null);
   const [preparingModel, setPreparingModel] = useState(false);
+  const [ragConfig, setRagConfig] = useState<RagConfigPayload | null>(null);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [embeddingBackend, setEmbeddingBackend] = useState("local");
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
+  const [apiModel, setApiModel] = useState("text-embedding-3-small");
+  const [apiKeyInput, setApiKeyInput] = useState("");
 
   const enabledCount = useMemo(() => docs.filter((d) => d.enabled).length, [docs]);
   const knowledgeAbs = useMemo(() => joinPath(projectPath, "knowledge"), [projectPath]);
@@ -137,6 +153,19 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
     }
   };
 
+  const loadRagConfig = async () => {
+    try {
+      const config = (await invoke("rag_get_config", { projectPath })) as RagConfigPayload;
+      setRagConfig(config);
+      setEmbeddingBackend(config.embeddingBackend || "local");
+      setApiBaseUrl(config.apiBaseUrl || "");
+      setApiModel(config.apiModel || "text-embedding-3-small");
+      setApiKeyInput("");
+    } catch {
+      setRagConfig(null);
+    }
+  };
+
   const loadDocContent = async (path: string) => {
     try {
       const content = (await invoke("rag_read_doc", { projectPath, docPath: path })) as string;
@@ -150,6 +179,7 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   useEffect(() => {
     void loadDocs();
     void loadEmbeddingStatus();
+    void loadRagConfig();
   }, [projectPath]);
 
   useEffect(() => {
@@ -207,6 +237,30 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
       message.error({ content: `准备模型失败: ${formatError(error)}`, key: "rag-model" });
     } finally {
       setPreparingModel(false);
+    }
+  };
+
+  const handleSaveEmbeddingConfig = async () => {
+    setSavingConfig(true);
+    message.loading({ content: "正在保存 embedding 配置...", key: "rag-config", duration: 0 });
+    try {
+      const config = (await invoke("rag_update_config", {
+        projectPath,
+        config: {
+          embeddingBackend,
+          apiBaseUrl,
+          apiModel,
+          apiKey: apiKeyInput.trim() ? apiKeyInput : null,
+        },
+      })) as RagConfigPayload;
+      setRagConfig(config);
+      setApiKeyInput("");
+      await loadEmbeddingStatus();
+      message.success({ content: "embedding 配置已保存", key: "rag-config" });
+    } catch (error) {
+      message.error({ content: `保存 embedding 配置失败: ${formatError(error)}`, key: "rag-config" });
+    } finally {
+      setSavingConfig(false);
     }
   };
 
@@ -327,11 +381,62 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
           （或从魔搭/ModelScope 等平台下载文件后放到上面目录）。
         </Typography.Paragraph>
 
+        <div style={{ marginBottom: 12, padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+          <Typography.Text strong>Embedding Backend</Typography.Text>
+          <Space direction="vertical" style={{ width: "100%", marginTop: 10 }}>
+            <Select
+              value={embeddingBackend}
+              onChange={setEmbeddingBackend}
+              options={[
+                { value: "local", label: "local · 本地模型" },
+                { value: "api", label: "api · OpenAI-Compatible Embeddings" },
+                { value: "disabled", label: "disabled · 关闭语义检索" },
+              ]}
+            />
+            {embeddingBackend === "api" ? (
+              <>
+                <Input
+                  value={apiBaseUrl}
+                  onChange={(e) => setApiBaseUrl(e.target.value)}
+                  placeholder="API Base URL，例如 https://api.openai.com/v1"
+                />
+                <Input
+                  value={apiModel}
+                  onChange={(e) => setApiModel(e.target.value)}
+                  placeholder="Embedding 模型名，例如 text-embedding-3-small"
+                />
+                <Input.Password
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder={ragConfig?.hasApiKey ? "留空则保留现有 API Key；输入空字符串不更新" : "输入 Embedding API Key"}
+                />
+              </>
+            ) : null}
+            <Space size={6} wrap>
+              <Button size="small" type="primary" loading={savingConfig} onClick={() => void handleSaveEmbeddingConfig()}>
+                保存 embedding 配置
+              </Button>
+              {ragConfig ? (
+                <Typography.Text type="secondary">
+                  当前：{ragConfig.embeddingBackend}
+                  {ragConfig.embeddingBackend === "api" ? ` · ${ragConfig.apiModel || "未填模型"}` : ""}
+                  {ragConfig.hasApiKey ? " · 已保存 API Key" : ""}
+                </Typography.Text>
+              ) : null}
+            </Space>
+          </Space>
+        </div>
+
         {embeddingStatus ? (
           <Typography.Paragraph style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
             当前 embedding：<Typography.Text code>{embeddingStatus.model}</Typography.Text> · backend{" "}
             <Typography.Text code>{embeddingStatus.backend}</Typography.Text> · 状态{" "}
             <Typography.Text code>{embeddingStatus.installed ? "ready" : "missing"}</Typography.Text>
+            {embeddingStatus.backend === "api" ? (
+              <>
+                {" "}· API {embeddingStatus.apiConfigured ? "ready" : "incomplete"}
+              </>
+            ) : null}
             {embeddingStatus.message ? (
               <>
                 <br />
@@ -351,7 +456,12 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
           <Button size="small" onClick={() => void handleOpenPath(localModelAbs)}>
             打开嵌入模型目录
           </Button>
-          <Button size="small" loading={preparingModel} onClick={() => void handlePrepareEmbeddingModel()}>
+          <Button
+            size="small"
+            loading={preparingModel}
+            onClick={() => void handlePrepareEmbeddingModel()}
+            disabled={embeddingBackend !== "local"}
+          >
             下载模型
           </Button>
         </Space>

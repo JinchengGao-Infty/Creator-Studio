@@ -15,6 +15,7 @@ import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
   buildWritingContextBundle,
   stripContinueDraftMarker,
+  type RetrievedWritingContext,
   type WritingContextDiagnostics,
   type ContinuePhase,
 } from "./contextBuilder";
@@ -37,6 +38,22 @@ import "./ai-panel.css";
 
 interface AIPanelProps {
   projectPath: string;
+}
+
+interface WritingContextResult {
+  backend: string;
+  chapterId: string;
+  chapterTitle?: string | null;
+  query: string;
+  combinedContext: string;
+  warnings: string[];
+  sections: Array<{
+    kind: string;
+    source: string;
+    title: string;
+    text: string;
+    score?: number | null;
+  }>;
 }
 
 function storageCurrentKey(projectPath: string) {
@@ -529,6 +546,30 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       } catch {
         // Store not ready — proceed without worldbuilding context
       }
+      let retrievedContext: RetrievedWritingContext | null = null;
+      if (resolved?.chapterId) {
+        try {
+          const writingContext = (await invoke("rag_get_writing_context", {
+            projectPath,
+            chapterId: resolved.chapterId,
+            query: content,
+            topK: 4,
+          })) as WritingContextResult;
+          retrievedContext = {
+            backend: writingContext.backend,
+            combinedContext: writingContext.combinedContext ?? "",
+            sectionCount: Array.isArray(writingContext.sections) ? writingContext.sections.length : 0,
+            warnings: Array.isArray(writingContext.warnings) ? writingContext.warnings : [],
+          };
+        } catch (error) {
+          retrievedContext = {
+            backend: "unavailable",
+            combinedContext: "",
+            sectionCount: 0,
+            warnings: [`写作检索上下文获取失败: ${formatError(error)}`],
+          };
+        }
+      }
       const { messagesForAi, finalSystemPrompt, diagnostics } = buildWritingContextBundle({
         projectPath,
         workingMessages,
@@ -538,6 +579,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         chapterId: resolved?.chapterId ?? null,
         chapterTitle: resolved?.chapterTitle ?? null,
         worldSummary,
+        retrievedContext,
       });
       setLastContextDiagnostics(diagnostics);
 
