@@ -1,10 +1,11 @@
-import { CheckOutlined, PlusOutlined } from "@ant-design/icons";
+import { CheckOutlined, DownloadOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { Button, Divider, Drawer, List, Space, Typography, message } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { WritingPreset } from "../../types/writingPreset";
 import { createDefaultWritingPreset } from "../../types/writingPreset";
 import PresetForm from "./PresetForm";
 import { formatError } from "../../utils/error";
+import { formatPresetAsMarkdown, parsePresetFromText } from "../../lib/writingPresetFiles";
 
 interface PresetSettingsDrawerProps {
   open: boolean;
@@ -42,6 +43,7 @@ export default function PresetSettingsDrawer({
   const [selectedId, setSelectedId] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -125,6 +127,49 @@ export default function PresetSettingsDrawer({
     }
   };
 
+  const handleExport = () => {
+    if (!selectedPreset) return;
+    const blob = new Blob([formatPresetAsMarkdown(selectedPreset)], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const safeName = (selectedPreset.name || "preset").replace(/[\\/:*?"<>|]/g, "-");
+    anchor.href = url;
+    anchor.download = `${safeName}.md`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    message.success("已导出当前预设");
+  };
+
+  const handleImportClick = () => {
+    importInputRef.current?.click();
+  };
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      const imported = parsePresetFromText(await file.text(), file.name);
+      const nextPreset: WritingPreset = {
+        ...imported,
+        id: generateId(),
+        isDefault: false,
+      };
+      setWorkingPresets((prev) => [nextPreset, ...prev.map(clonePreset)]);
+      setSelectedId(nextPreset.id);
+      setWorkingActiveId(nextPreset.id);
+      setDirty(true);
+      message.success(`已导入预设：${nextPreset.name}`);
+    } catch (error) {
+      message.error(`导入预设失败: ${formatError(error)}`);
+    }
+  };
+
   return (
     <Drawer
       title="写作预设设置"
@@ -143,6 +188,13 @@ export default function PresetSettingsDrawer({
         <div>
           <Typography.Text strong>预设列表</Typography.Text>
           <div style={{ marginTop: 8 }}>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".md,.txt,text/plain,text/markdown"
+              style={{ display: "none" }}
+              onChange={(e) => void handleImportFile(e)}
+            />
             <List
               size="small"
               bordered
@@ -184,6 +236,14 @@ export default function PresetSettingsDrawer({
             >
               新建预设
             </Button>
+            <Space style={{ marginTop: 8, width: "100%" }}>
+              <Button icon={<UploadOutlined />} onClick={handleImportClick}>
+                导入 md/txt
+              </Button>
+              <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={!selectedPreset}>
+                导出当前
+              </Button>
+            </Space>
           </div>
         </div>
 
