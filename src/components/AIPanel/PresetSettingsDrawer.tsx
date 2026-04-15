@@ -2,7 +2,7 @@ import { CheckOutlined, DownloadOutlined, PlusOutlined, UploadOutlined } from "@
 import { Button, Divider, Drawer, List, Space, Typography, message } from "antd";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { WritingPreset } from "../../types/writingPreset";
-import { createDefaultWritingPreset } from "../../types/writingPreset";
+import { createBuiltinWritingPresets, createDefaultWritingPreset } from "../../types/writingPreset";
 import PresetForm from "./PresetForm";
 import { formatError } from "../../utils/error";
 import { formatPresetAsMarkdown, parsePresetFromText } from "../../lib/writingPresetFiles";
@@ -44,10 +44,11 @@ export default function PresetSettingsDrawer({
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const builtinPresets = useMemo(() => createBuiltinWritingPresets(), []);
 
   useEffect(() => {
     if (!open) return;
-    const next = presets.length ? clonePresets(presets) : [createDefaultWritingPreset()];
+    const next = presets.length ? clonePresets(presets) : clonePresets(builtinPresets);
     const active =
       activePresetId && next.some((p) => p.id === activePresetId)
         ? activePresetId
@@ -58,7 +59,7 @@ export default function PresetSettingsDrawer({
     setSelectedId(active);
     setSaving(false);
     setDirty(false);
-  }, [open, presets, activePresetId]);
+  }, [open, presets, activePresetId, builtinPresets]);
 
   const selectedPreset = useMemo(() => {
     return workingPresets.find((p) => p.id === selectedId) ?? null;
@@ -110,7 +111,7 @@ export default function PresetSettingsDrawer({
 
   const handleSave = async () => {
     if (saving) return;
-    const normalized = workingPresets.length ? workingPresets : [createDefaultWritingPreset()];
+    const normalized = workingPresets.length ? workingPresets : clonePresets(builtinPresets);
     const active =
       workingActiveId && normalized.some((p) => p.id === workingActiveId)
         ? workingActiveId

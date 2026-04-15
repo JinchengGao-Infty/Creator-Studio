@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-  createDefaultWritingPreset,
+  createBuiltinWritingPresets,
   DEFAULT_PRESET_ID,
   type WritingPreset,
 } from "../types/writingPreset";
@@ -17,14 +17,14 @@ interface GetPresetsResponse {
 }
 
 export async function getWritingPresets(projectPath: string): Promise<WritingPresetsState> {
-  const fallback = createDefaultWritingPreset();
+  const fallbackPresets = createBuiltinWritingPresets();
 
   const result = (await invoke("get_presets", {
     projectPath,
   })) as Partial<GetPresetsResponse> | null;
 
   const presets =
-    Array.isArray(result?.presets) && result?.presets.length ? result.presets : [fallback];
+    Array.isArray(result?.presets) && result?.presets.length ? result.presets : fallbackPresets;
   const rawActiveId =
     typeof result?.active_preset_id === "string"
       ? result.active_preset_id

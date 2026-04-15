@@ -17,6 +17,7 @@ const KNOWLEDGE_DIR: &str = "knowledge";
 const RAG_DIR: &str = ".creatorai/rag";
 const RAG_CONFIG_PATH: &str = ".creatorai/rag/config.json";
 const RAG_INDEX_PATH: &str = ".creatorai/rag/index.bin";
+const RAG_EMBEDDING_STATUS_PATH: &str = ".creatorai/rag/embedding-status.json";
 const RAG_SCHEMA_VERSION: u32 = 1;
 const LOCAL_EMBEDDING_MODEL_DIR: &str = ".creatorai/rag/models/Xenova/bge-small-zh-v1.5";
 const LOCAL_EMBEDDING_MODEL_NAME: &str = "Xenova/bge-small-zh-v1.5";
@@ -78,6 +79,10 @@ fn index_path(project_root: &Path) -> Result<PathBuf, String> {
     validate_path(project_root, RAG_INDEX_PATH)
 }
 
+fn embedding_status_path(project_root: &Path) -> Result<PathBuf, String> {
+    validate_path(project_root, RAG_EMBEDDING_STATUS_PATH)
+}
+
 fn local_model_dir(project_root: &Path) -> Result<PathBuf, String> {
     validate_path(project_root, LOCAL_EMBEDDING_MODEL_DIR)
 }
@@ -88,9 +93,11 @@ fn hf_cache_dir(project_root: &Path) -> Result<PathBuf, String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct RagConfig {
     pub schema_version: u32,
     pub enabled_paths: Vec<String>,
+    pub embedding_backend: String,
 }
 
 impl Default for RagConfig {
@@ -98,8 +105,41 @@ impl Default for RagConfig {
         Self {
             schema_version: RAG_SCHEMA_VERSION,
             enabled_paths: Vec::new(),
+            embedding_backend: "local".to_string(),
         }
     }
+}
+
+#[cfg(test)]
+fn unique_temp_project_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("creatorai-rag-{label}-{nanos}"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagEmbeddingStatus {
+    pub backend: String,
+    pub installed: bool,
+    pub source: String,
+    pub model: String,
+    pub local_model_dir: String,
+    pub cache_dir: String,
+    pub index_exists: bool,
+    pub requires_download: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RagEmbeddingMarker {
+    backend: String,
+    source: String,
+    model: String,
+    prepared_at: u64,
 }
 
 fn load_config(project_root: &Path) -> Result<RagConfig, String> {
@@ -118,6 +158,27 @@ fn save_config(project_root: &Path, config: &RagConfig) -> Result<(), String> {
     let path = config_path(project_root)?;
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Serialize rag config failed: {e}"))?;
+    write_protection::write_string_with_backup(project_root, &path, &format!("{json}\n"))
+        .map(|_| ())
+}
+
+fn load_embedding_marker(project_root: &Path) -> Result<Option<RagEmbeddingMarker>, String> {
+    ensure_rag_dir(project_root)?;
+    let path = embedding_status_path(project_root)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|e| format!("Failed to read embedding marker: {e}"))?;
+    serde_json::from_slice::<RagEmbeddingMarker>(&bytes)
+        .map(Some)
+        .map_err(|e| format!("Failed to parse embedding marker: {e}"))
+}
+
+fn save_embedding_marker(project_root: &Path, marker: &RagEmbeddingMarker) -> Result<(), String> {
+    ensure_rag_dir(project_root)?;
+    let path = embedding_status_path(project_root)?;
+    let json = serde_json::to_string_pretty(marker)
+        .map_err(|e| format!("Serialize embedding marker failed: {e}"))?;
     write_protection::write_string_with_backup(project_root, &path, &format!("{json}\n"))
         .map(|_| ())
 }
@@ -369,12 +430,76 @@ fn load_local_embedding_model(model_dir: &Path) -> Result<Option<TextEmbedding>,
         .map_err(|e| format!("Failed to init local embedding model: {e}"))
 }
 
-fn init_embedding_model(project_root: &Path) -> Result<TextEmbedding, String> {
+fn local_model_state(model_dir: &Path) -> Result<(bool, bool, Option<String>), String> {
+    if !model_dir.exists() {
+        return Ok((false, false, None));
+    }
+
+    let required = [
+        model_dir.join("onnx/model.onnx"),
+        model_dir.join("tokenizer.json"),
+        model_dir.join("config.json"),
+        model_dir.join("special_tokens_map.json"),
+        model_dir.join("tokenizer_config.json"),
+    ];
+
+    let any_present = required.iter().any(|p| p.exists());
+    if !any_present {
+        return Ok((false, false, None));
+    }
+
+    let missing = [
+        ("onnx/model.onnx", required[0].exists()),
+        ("tokenizer.json", required[1].exists()),
+        ("config.json", required[2].exists()),
+        ("special_tokens_map.json", required[3].exists()),
+        ("tokenizer_config.json", required[4].exists()),
+    ]
+    .into_iter()
+    .find(|(_, exists)| !exists)
+    .map(|(name, _)| name.to_string());
+
+    if let Some(name) = missing {
+        return Ok((false, true, Some(format!("本地嵌入模型目录缺少必要文件：{name}"))));
+    }
+
+    Ok((true, true, None))
+}
+
+fn init_cached_embedding_model(project_root: &Path) -> Result<TextEmbedding, String> {
+    let cache_dir = hf_cache_dir(project_root)?;
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create hf cache dir: {e}"))?;
+
+    let options = InitOptions::new(EmbeddingModel::BGESmallZHV15)
+        .with_cache_dir(cache_dir)
+        .with_show_download_progress(false);
+
+    let prev_offline = std::env::var("HF_HUB_OFFLINE").ok();
+    std::env::set_var("HF_HUB_OFFLINE", "1");
+    let result = TextEmbedding::try_new(options)
+        .map_err(|e| format!("Cached embedding model unavailable: {e}"));
+    match prev_offline {
+        Some(value) => std::env::set_var("HF_HUB_OFFLINE", value),
+        None => std::env::remove_var("HF_HUB_OFFLINE"),
+    }
+    result
+}
+
+fn init_embedding_model(project_root: &Path, allow_download: bool) -> Result<TextEmbedding, String> {
     // Prefer local model files if provided by the user.
     let local_dir = local_model_dir(project_root)?;
     match load_local_embedding_model(&local_dir)? {
         Some(model) => return Ok(model),
         None => {}
+    }
+
+    if !allow_download {
+        return init_cached_embedding_model(project_root).map_err(|_| {
+            format!(
+                "Embedding 模型尚未准备。请先在知识库面板点击“下载模型”，或手动把模型文件放到：{}",
+                LOCAL_EMBEDDING_MODEL_DIR
+            )
+        });
     }
 
     // Otherwise, download via HuggingFace hub (can be mirrored via HF_ENDPOINT).
@@ -434,7 +559,7 @@ Mirror error: {err2}"
     }
 }
 
-fn embedder(project_root: &Path) -> Result<MutexGuard<'static, TextEmbedding>, String> {
+fn embedder(project_root: &Path, allow_download: bool) -> Result<MutexGuard<'static, TextEmbedding>, String> {
     static EMBEDDER: OnceLock<Mutex<TextEmbedding>> = OnceLock::new();
     static INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -455,13 +580,71 @@ fn embedder(project_root: &Path) -> Result<MutexGuard<'static, TextEmbedding>, S
             .map_err(|_| "Embedding model lock poisoned".to_string());
     }
 
-    let model = init_embedding_model(project_root)?;
+    let model = init_embedding_model(project_root, allow_download)?;
     let _ = EMBEDDER.set(Mutex::new(model));
     EMBEDDER
         .get()
         .ok_or("Embedding model init failed".to_string())?
         .lock()
         .map_err(|_| "Embedding model lock poisoned".to_string())
+}
+
+pub fn embedding_status(project_root: &Path) -> Result<RagEmbeddingStatus, String> {
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    ensure_knowledge_dir(&project_root)?;
+    ensure_rag_dir(&project_root)?;
+    let config = load_config(&project_root)?;
+    let local_dir = local_model_dir(&project_root)?;
+    let marker = load_embedding_marker(&project_root)?;
+    let (local_complete, local_touched, local_issue) = local_model_state(&local_dir)?;
+    let index_exists = index_path(&project_root)?.exists();
+
+    let (installed, source, message) = if local_complete {
+        (true, "local-files".to_string(), None)
+    } else if let Some(existing) = marker {
+        (true, existing.source, None)
+    } else if local_touched {
+        (false, "local-files".to_string(), local_issue)
+    } else {
+        (
+            false,
+            "missing".to_string(),
+            Some("未安装 embedding 模型。主功能不受影响，需要语义检索时再下载即可。".to_string()),
+        )
+    };
+
+    Ok(RagEmbeddingStatus {
+        backend: config.embedding_backend,
+        installed,
+        source,
+        model: LOCAL_EMBEDDING_MODEL_NAME.to_string(),
+        local_model_dir: LOCAL_EMBEDDING_MODEL_DIR.to_string(),
+        cache_dir: HF_CACHE_DIR.to_string(),
+        index_exists,
+        requires_download: !installed,
+        message,
+    })
+}
+
+pub fn prepare_embedding_model(project_root: &Path) -> Result<RagEmbeddingStatus, String> {
+    let project_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("Invalid project path: {e}"))?;
+    ensure_knowledge_dir(&project_root)?;
+    ensure_rag_dir(&project_root)?;
+    let _ = init_embedding_model(&project_root, true)?;
+    save_embedding_marker(
+        &project_root,
+        &RagEmbeddingMarker {
+            backend: "local".to_string(),
+            source: "downloaded".to_string(),
+            model: LOCAL_EMBEDDING_MODEL_NAME.to_string(),
+            prepared_at: now_unix_seconds()?,
+        },
+    )?;
+    embedding_status(&project_root)
 }
 
 fn normalize_embedding(mut v: Vec<f32>) -> (Vec<f32>, f32) {
@@ -543,7 +726,7 @@ pub fn build_index(project_root: &Path) -> Result<RagIndexSummary, String> {
         }
     }
 
-    let mut embedder = embedder(&project_root)?;
+    let mut embedder = embedder(&project_root, false)?;
     let inputs: Vec<&str> = chunk_texts.iter().map(|s| s.as_str()).collect();
     let embeddings = embedder
         .embed(inputs, None)
@@ -643,7 +826,7 @@ pub fn search(project_root: &Path, query: &str, top_k: usize) -> Result<Vec<RagH
         return Ok(Vec::new());
     }
 
-    let mut embedder = embedder(&project_root)?;
+    let mut embedder = embedder(&project_root, false)?;
     let q_emb = embedder
         .embed(vec![q], None)
         .map_err(|e| format!("Embedding failed: {e}"))?;
@@ -679,4 +862,69 @@ pub fn search(project_root: &Path, query: &str, top_k: usize) -> Result<Vec<RagH
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_project(label: &str) -> PathBuf {
+        let root = unique_temp_project_dir(label);
+        fs::create_dir_all(root.join(".creatorai")).unwrap();
+        fs::create_dir_all(root.join("chapters")).unwrap();
+        fs::write(root.join(".creatorai/config.json"), "{\n  \"project\": \"test\"\n}\n").unwrap();
+        fs::write(root.join("chapters/index.json"), "[]\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn rag_config_missing_embedding_backend_uses_default_local() {
+        let root = create_test_project("legacy-config");
+        let rag_dir = root.join(".creatorai/rag");
+        fs::create_dir_all(&rag_dir).unwrap();
+        fs::write(
+            rag_dir.join("config.json"),
+            "{\n  \"schemaVersion\": 1,\n  \"enabledPaths\": [\"knowledge/story.md\"]\n}\n",
+        )
+        .unwrap();
+
+        let config = load_config(&root).unwrap();
+        assert_eq!(config.embedding_backend, "local");
+        assert_eq!(config.enabled_paths, vec!["knowledge/story.md".to_string()]);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn embedding_status_reports_missing_model_without_error() {
+        let root = create_test_project("missing-model");
+
+        let status = embedding_status(&root).unwrap();
+        assert_eq!(status.backend, "local");
+        assert!(!status.installed);
+        assert!(status.requires_download);
+        assert_eq!(status.source, "missing");
+        assert!(status.message.unwrap_or_default().contains("未安装 embedding 模型"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn embedding_status_reports_partial_local_model_directory() {
+        let root = create_test_project("partial-local");
+        let model_dir = root.join(LOCAL_EMBEDDING_MODEL_DIR);
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("tokenizer.json"), "{}").unwrap();
+
+        let status = embedding_status(&root).unwrap();
+        assert!(!status.installed);
+        assert!(status.requires_download);
+        assert_eq!(status.source, "local-files");
+        assert!(status
+            .message
+            .unwrap_or_default()
+            .contains("本地嵌入模型目录缺少必要文件"));
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

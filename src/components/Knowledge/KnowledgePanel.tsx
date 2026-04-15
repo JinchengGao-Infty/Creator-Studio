@@ -30,6 +30,18 @@ interface RagHit {
   text: string;
 }
 
+interface RagEmbeddingStatus {
+  backend: string;
+  installed: boolean;
+  source: string;
+  model: string;
+  localModelDir: string;
+  cacheDir: string;
+  indexExists: boolean;
+  requiresDownload: boolean;
+  message?: string | null;
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
@@ -72,6 +84,8 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<RagHit[]>([]);
   const [searching, setSearching] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState<RagEmbeddingStatus | null>(null);
+  const [preparingModel, setPreparingModel] = useState(false);
 
   const enabledCount = useMemo(() => docs.filter((d) => d.enabled).length, [docs]);
   const knowledgeAbs = useMemo(() => joinPath(projectPath, "knowledge"), [projectPath]);
@@ -114,6 +128,15 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
     }
   };
 
+  const loadEmbeddingStatus = async () => {
+    try {
+      const status = (await invoke("rag_embedding_status", { projectPath })) as RagEmbeddingStatus;
+      setEmbeddingStatus(status);
+    } catch {
+      setEmbeddingStatus(null);
+    }
+  };
+
   const loadDocContent = async (path: string) => {
     try {
       const content = (await invoke("rag_read_doc", { projectPath, docPath: path })) as string;
@@ -126,6 +149,7 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
 
   useEffect(() => {
     void loadDocs();
+    void loadEmbeddingStatus();
   }, [projectPath]);
 
   useEffect(() => {
@@ -157,17 +181,32 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
 
   const handleBuildIndex = async () => {
     setBuilding(true);
-    message.loading({ content: "正在构建向量索引（首次会下载模型）...", key: "rag", duration: 0 });
+    message.loading({ content: "正在构建向量索引...", key: "rag", duration: 0 });
     try {
       const summary = (await invoke("rag_build_index", { projectPath })) as RagIndexSummary;
       message.success({
         content: `索引完成：${summary.docCount} 文档 / ${summary.chunkCount} 片段（${summary.model}）`,
         key: "rag",
       });
+      void loadEmbeddingStatus();
     } catch (error) {
       message.error({ content: `构建失败: ${formatError(error)}`, key: "rag" });
     } finally {
       setBuilding(false);
+    }
+  };
+
+  const handlePrepareEmbeddingModel = async () => {
+    setPreparingModel(true);
+    message.loading({ content: "正在准备 embedding 模型...", key: "rag-model", duration: 0 });
+    try {
+      const status = (await invoke("rag_prepare_embedding_model", { projectPath })) as RagEmbeddingStatus;
+      setEmbeddingStatus(status);
+      message.success({ content: "embedding 模型已准备完成", key: "rag-model" });
+    } catch (error) {
+      message.error({ content: `准备模型失败: ${formatError(error)}`, key: "rag-model" });
+    } finally {
+      setPreparingModel(false);
     }
   };
 
@@ -279,7 +318,7 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
           <br />
           索引保存位置：<Typography.Text code>{ragAbs}</Typography.Text>。
           <br />
-          嵌入模型默认会在首次点击“构建索引”时下载（国内可能无法访问 HuggingFace）。你也可以手动下载模型文件并放到：{" "}
+          embedding 模型现在是可选下载，不会阻塞主功能。你也可以手动下载模型文件并放到：{" "}
           <Typography.Text code>{localModelAbs}</Typography.Text>{" "}
           （需要：onnx/model.onnx、tokenizer.json、config.json、special_tokens_map.json、tokenizer_config.json）。
           <br />
@@ -287,6 +326,20 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
           你也可以在启动应用前手动设置环境变量 <Typography.Text code>HF_ENDPOINT</Typography.Text>{" "}
           （或从魔搭/ModelScope 等平台下载文件后放到上面目录）。
         </Typography.Paragraph>
+
+        {embeddingStatus ? (
+          <Typography.Paragraph style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
+            当前 embedding：<Typography.Text code>{embeddingStatus.model}</Typography.Text> · backend{" "}
+            <Typography.Text code>{embeddingStatus.backend}</Typography.Text> · 状态{" "}
+            <Typography.Text code>{embeddingStatus.installed ? "ready" : "missing"}</Typography.Text>
+            {embeddingStatus.message ? (
+              <>
+                <br />
+                {embeddingStatus.message}
+              </>
+            ) : null}
+          </Typography.Paragraph>
+        ) : null}
 
         <Space size={6} wrap>
           <Button size="small" onClick={() => void handleOpenPath(knowledgeAbs)}>
@@ -297,6 +350,9 @@ export default function KnowledgePanel({ projectPath }: KnowledgePanelProps) {
           </Button>
           <Button size="small" onClick={() => void handleOpenPath(localModelAbs)}>
             打开嵌入模型目录
+          </Button>
+          <Button size="small" loading={preparingModel} onClick={() => void handlePrepareEmbeddingModel()}>
+            下载模型
           </Button>
         </Space>
 

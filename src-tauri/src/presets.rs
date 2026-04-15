@@ -71,20 +71,111 @@ fn config_path(project_root: &Path) -> Result<PathBuf, String> {
     validate_path(project_root, ".creatorai/config.json")
 }
 
-fn default_preset() -> WritingPreset {
-    WritingPreset {
-        id: "default".to_string(),
-        name: "默认风格".to_string(),
-        is_default: true,
-        style: WritingStyle {
-            tone: "自然流畅".to_string(),
-            perspective: "第三人称有限".to_string(),
-            tense: "过去式".to_string(),
-            description: "适中".to_string(),
+fn builtin_presets() -> Vec<WritingPreset> {
+    vec![
+        WritingPreset {
+            id: "default".to_string(),
+            name: "默认风格".to_string(),
+            is_default: true,
+            style: WritingStyle {
+                tone: "自然流畅".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "适中".to_string(),
+            },
+            rules: vec![
+                "优先写清当前场景目标，再展开动作和情绪。".to_string(),
+                "避免空泛抒情，细节要服务人物和剧情。".to_string(),
+                "段落之间保持自然过渡，不要跳剪式断层。".to_string(),
+            ],
+            custom_prompt: "默认追求稳健、自然、可持续连载的正文写法。".to_string(),
         },
-        rules: Vec::new(),
-        custom_prompt: String::new(),
-    }
+        WritingPreset {
+            id: "tight-pacing".to_string(),
+            name: "紧凑推进".to_string(),
+            is_default: false,
+            style: WritingStyle {
+                tone: "利落克制".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "偏动作与决策".to_string(),
+            },
+            rules: vec![
+                "每个场景都要有明确推进，不要原地打转。".to_string(),
+                "减少空镜和重复心理描写，优先事件、冲突、选择。".to_string(),
+                "结尾尽量留下下一步张力。".to_string(),
+            ],
+            custom_prompt: "适合剧情推进、追逐、谈判、危机处理这类需要节奏的章节。".to_string(),
+        },
+        WritingPreset {
+            id: "lyrical-detail".to_string(),
+            name: "细腻抒情".to_string(),
+            is_default: false,
+            style: WritingStyle {
+                tone: "细腻温润".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "感官描写更丰富".to_string(),
+            },
+            rules: vec![
+                "感官细节要具体，但不要堆砌形容词。".to_string(),
+                "情绪变化通过动作、停顿和环境映射出来。".to_string(),
+                "句子可以稍微舒展，但仍要保持清晰。".to_string(),
+            ],
+            custom_prompt: "适合情感递进、关系升温、氛围场景和偏文学化段落。".to_string(),
+        },
+        WritingPreset {
+            id: "cold-suspense".to_string(),
+            name: "冷峻悬疑".to_string(),
+            is_default: false,
+            style: WritingStyle {
+                tone: "冷静压抑".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "信息控制更严格".to_string(),
+            },
+            rules: vec![
+                "信息要分层释放，不要一次解释完。".to_string(),
+                "可留白，但线索必须真实存在。".to_string(),
+                "避免角色突然话多，保持克制和压迫感。".to_string(),
+            ],
+            custom_prompt: "适合悬疑、调查、危险接近、人物互相试探的章节。".to_string(),
+        },
+        WritingPreset {
+            id: "light-comedy".to_string(),
+            name: "轻快喜剧".to_string(),
+            is_default: false,
+            style: WritingStyle {
+                tone: "轻松灵动".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "对话驱动更强".to_string(),
+            },
+            rules: vec![
+                "笑点优先来自人物反应和关系，而不是硬插段子。".to_string(),
+                "对话要短促，有来回。".to_string(),
+                "轻快不等于轻飘，仍要保留剧情推进。".to_string(),
+            ],
+            custom_prompt: "适合轻喜、日常互动、反差萌和轻松群像场景。".to_string(),
+        },
+        WritingPreset {
+            id: "webnovel-hook".to_string(),
+            name: "网文爽感".to_string(),
+            is_default: false,
+            style: WritingStyle {
+                tone: "直接有力".to_string(),
+                perspective: "第三人称有限".to_string(),
+                tense: "过去式".to_string(),
+                description: "强调爽点和钩子".to_string(),
+            },
+            rules: vec![
+                "尽早亮出本章核心看点，不要藏太久。".to_string(),
+                "冲突和回报要清楚，让读者感到值回一章。".to_string(),
+                "章末尽量留下钩子，吸引继续读。".to_string(),
+            ],
+            custom_prompt: "适合连载节奏、爽点兑现、反转和章末钩子设计。".to_string(),
+        },
+    ]
 }
 
 fn parse_presets(value: &Value) -> Result<Option<Vec<WritingPreset>>, String> {
@@ -118,7 +209,7 @@ fn write_config_json(project_root: &Path, json: &Value) -> Result<(), String> {
 fn normalize(presets: Vec<WritingPreset>, active: Option<String>) -> (Vec<WritingPreset>, String) {
     let mut presets = presets;
     if presets.is_empty() {
-        presets.push(default_preset());
+        presets = builtin_presets();
     }
 
     // Ensure there is at most one default preset (keep first).

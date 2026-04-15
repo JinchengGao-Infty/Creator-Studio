@@ -9,7 +9,7 @@ import SessionList from "./SessionList";
 import ContextDiagnosticsPanel from "./ContextDiagnosticsPanel";
 import { aiChat } from "../../lib/ai";
 import { getWritingPresets, saveWritingPresets } from "../../lib/writingPresets";
-import { createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
+import { createBuiltinWritingPresets, createDefaultWritingPreset, type WritingPreset } from "../../types/writingPreset";
 import PresetSelector from "./PresetSelector";
 import PresetSettingsDrawer from "./PresetSettingsDrawer";
 import {
@@ -101,6 +101,7 @@ function currentChapterStorageKey(projectPath: string) {
 }
 
 export default function AIPanel({ projectPath }: AIPanelProps) {
+  const builtinPresets = useMemo(() => createBuiltinWritingPresets(), []);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const mode: SessionMode = "Continue";
@@ -184,9 +185,9 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       } catch (error) {
         if (cancelled) return;
         message.error(`加载写作预设失败: ${formatError(error)}`);
-        const fallback = createDefaultWritingPreset();
-        setPresets([fallback]);
-        setActivePresetId(fallback.id);
+        const fallback = builtinPresets;
+        setPresets(fallback);
+        setActivePresetId(fallback.find((preset) => preset.isDefault)?.id ?? fallback[0]?.id ?? createDefaultWritingPreset().id);
       } finally {
         if (!cancelled) setLoadingPresets(false);
       }
@@ -196,7 +197,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [projectPath]);
+  }, [projectPath, builtinPresets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -763,7 +764,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
         </div>
 
         <PresetSelector
-          presets={presets.length ? presets : [createDefaultWritingPreset()]}
+          presets={presets.length ? presets : builtinPresets}
           activePresetId={activePresetId}
           onSelect={handleSelectPreset}
           onOpenSettings={() => setPresetSettingsOpen(true)}
@@ -783,7 +784,7 @@ export default function AIPanel({ projectPath }: AIPanelProps) {
       <PresetSettingsDrawer
         open={presetSettingsOpen}
         onClose={() => setPresetSettingsOpen(false)}
-        presets={presets.length ? presets : [createDefaultWritingPreset()]}
+        presets={presets.length ? presets : builtinPresets}
         activePresetId={activePresetId}
         onSave={handleSavePresets}
       />
