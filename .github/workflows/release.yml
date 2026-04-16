@@ -76,6 +76,42 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
+      - name: Verify installer set
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob globstar
+          dmgs=(artifacts/**/*_aarch64.dmg)
+          msis=(artifacts/**/*.msi)
+          exes=(artifacts/**/*setup.exe)
+
+          echo "DMG files:"
+          printf '  %s\n' "${dmgs[@]:-<none>}"
+          echo "MSI files:"
+          printf '  %s\n' "${msis[@]:-<none>}"
+          echo "EXE files:"
+          printf '  %s\n' "${exes[@]:-<none>}"
+
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly 1 macOS dmg, got ${#dmgs[@]}"
+            exit 1
+          fi
+          if [[ ${#msis[@]} -ne 1 ]]; then
+            echo "Expected exactly 1 Windows msi, got ${#msis[@]}"
+            exit 1
+          fi
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly 1 Windows setup exe, got ${#exes[@]}"
+            exit 1
+          fi
+
+          total=$(( ${#dmgs[@]} + ${#msis[@]} + ${#exes[@]} ))
+          if [[ ${total} -ne 3 ]]; then
+            echo "Expected exactly 3 installer packages in total, got ${total}"
+            exit 1
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -85,10 +121,14 @@ jobs:
 
             AI 驱动的小说写作助手
 
-            ### 下载
-            - **macOS (Apple Silicon)**: CreatorAI_*_aarch64.dmg
-            - **Windows**: CreatorAI_*_x64-setup.exe 或 .msi
-          files: artifacts/**/*
+            ### 安装包
+            - **macOS (Apple Silicon)**: 1 个 `.dmg`
+            - **Windows**: 1 个 `.msi`
+            - **Windows**: 1 个 `setup.exe`
+          files: |
+            artifacts/**/*_aarch64.dmg
+            artifacts/**/*.msi
+            artifacts/**/*setup.exe
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
