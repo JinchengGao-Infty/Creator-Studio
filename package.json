@@ -18,14 +18,14 @@
     "test:ai-engine-tool-safety": "node test-suite/run.mjs ai-engine-tool-safety",
     "test:ai-engine-error-recovery": "node test-suite/run.mjs ai-engine-error-recovery",
     "test:release-copy": "node test-suite/run.mjs release-copy",
-    "tauri": "tauri",
+    "tauri": "npm exec tauri",
     "ai-engine:build": "node scripts/build-ai-engine.mjs",
-    "tauri:dev": "npm run ai-engine:build && tauri dev",
-    "tauri:build": "npm run ai-engine:build && tauri build && node scripts/copy-release-artifacts.mjs",
-    "tauri:build:win": "npm run ai-engine:build && tauri build --target x86_64-pc-windows-msvc && node scripts/copy-release-artifacts.mjs",
-    "tauri:build:mac": "npm run ai-engine:build && tauri build --target aarch64-apple-darwin && node scripts/copy-release-artifacts.mjs",
-    "tauri:build:linux": "npm run ai-engine:build && tauri build --target x86_64-unknown-linux-gnu && node scripts/copy-release-artifacts.mjs",
-    "tauri:build:all": "npm run ai-engine:build && tauri build && node scripts/copy-release-artifacts.mjs"
+    "tauri:dev": "npm run ai-engine:build && npm exec tauri dev",
+    "tauri:build": "npm run ai-engine:build && npm exec tauri build && node scripts/copy-release-artifacts.mjs",
+    "tauri:build:win": "npm run ai-engine:build && npm exec tauri build --target x86_64-pc-windows-msvc && node scripts/copy-release-artifacts.mjs",
+    "tauri:build:mac": "npm run ai-engine:build && npm exec tauri build --target aarch64-apple-darwin && node scripts/copy-release-artifacts.mjs",
+    "tauri:build:linux": "npm run ai-engine:build && npm exec tauri build --target x86_64-unknown-linux-gnu && node scripts/copy-release-artifacts.mjs",
+    "tauri:build:all": "npm run ai-engine:build && npm exec tauri build && node scripts/copy-release-artifacts.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
